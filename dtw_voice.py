@@ -101,17 +101,19 @@ class FeatureExtractor:
         self.scaler = StandardScaler()
         self._fitted = False
 
-    def load_from_bytes(self, audio_bytes):
+    def load_from_path(self, filepath: str):
+        """Membaca audio dengan aman langsung dari path disk"""
         try:
-            import io
-            y, _ = librosa.load(io.BytesIO(audio_bytes), sr=self.cfg.SAMPLE_RATE, mono=True)
+            y, _ = librosa.load(filepath, sr=self.cfg.SAMPLE_RATE, mono=True)
             
             if len(y) / self.cfg.SAMPLE_RATE < self.cfg.MIN_DURATION:
                 return None
             
+            # Normalisasi volume
             if np.max(np.abs(y)) > 0:
                 y = y / np.max(np.abs(y))
             
+            # Buang bagian hening
             y, _ = librosa.effects.trim(y, top_db=20)
             
             if self.cfg.FIXED_DURATION:
@@ -139,8 +141,18 @@ class FeatureExtractor:
             features.append(librosa.feature.delta(mfcc, order=2).T)
         return np.hstack(features)
 
-    def extract_from_bytes(self, audio_bytes):
-        y = self.load_from_bytes(audio_bytes)
+    def extract_from_bytes(self, audio_bytes: bytes):
+        """Menyimpan byte ke file sementara di disk agar stabil dibaca librosa/ffmpeg"""
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+        
+        try:
+            y = self.load_from_path(tmp_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+                
         if y is None:
             return None
         return self.extract_mfcc(y)
@@ -231,11 +243,13 @@ class DTWClassifier:
                     audio_files = [f for f in tmppath.rglob('*') if f.suffix.lower() in supported]
                     
                     for af in audio_files:
+                        # Abaikan file sistem sampah dari macOS / Windows
+                        if '__MACOSX' in str(af) or af.name.startswith('.'):
+                            continue
+                            
                         try:
-                            with open(str(af), 'rb') as f:
-                                audio_bytes = f.read()
-                                
-                            y = self.extractor.load_from_bytes(audio_bytes)
+                            # Baca dengan fungsi disk-path yang aman
+                            y = self.extractor.load_from_path(str(af))
                             if y is not None:
                                 feat = self.extractor.extract_mfcc(y)
                                 if feat is not None:
@@ -272,7 +286,7 @@ class DTWClassifier:
         
         feat = self.extractor.extract_from_bytes(test_bytes)
         if feat is None:
-            raise ValueError("Gagal proses audio")
+            raise ValueError("Gagal memproses audio. File mungkin rusak atau terlalu pendek.")
         
         feat = self.extractor.normalize(feat)
         
@@ -289,14 +303,14 @@ class DTWClassifier:
         all_dist.sort(key=lambda x: x[0])
         k = min(self.cfg.K_NEIGHBORS, len(all_dist))
         top_k = all_dist[:k]
-        votes = Counter([x[1] for x in top_k])
-        pred = votes.most_common(1)[0][0]
         
+        # HITUNG CONFIDENCE BERDASARKAN JARAK RATA-RATA K-TETANGGA TERDEKAT
         class_avg = {}
         class_min = {}
         for cn in self.class_names:
             ds = [d for d, c, _ in all_dist if c == cn]
-            class_avg[cn] = float(np.mean(ds)) if ds else float('inf')
+            # Menghitung rata-rata dari k-tetangga terdekat untuk kelas tersebut agar seimbang
+            class_avg[cn] = float(np.mean(ds[:self.cfg.K_NEIGHBORS])) if ds else float('inf')
             class_min[cn] = float(min(ds)) if ds else float('inf')
         
         avg_arr = np.array([class_avg[c] for c in self.class_names])
@@ -309,6 +323,9 @@ class DTWClassifier:
             conf = np.ones(len(self.class_names)) / len(self.class_names)
         
         class_conf = {self.class_names[i]: float(conf[i]) for i in range(len(self.class_names))}
+        
+        # LOGIKA BARU: Prediksi mengikuti Confidence Tertinggi
+        pred = max(class_conf, key=class_conf.get)
         ranked = sorted(class_conf.items(), key=lambda x: x[1], reverse=True)
         
         return {
@@ -326,8 +343,16 @@ class DTWClassifier:
 # ============================================================
 
 def create_waveform_plot(audio_bytes):
-    import io
-    y, sr = librosa.load(io.BytesIO(audio_bytes), sr=16000)
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+        
+    try:
+        y, sr = librosa.load(tmp_path, sr=16000)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            
     time = np.arange(0, len(y)) / sr
     
     fig = go.Figure()
@@ -352,8 +377,16 @@ def create_waveform_plot(audio_bytes):
     return fig
 
 def create_spectrogram_plot(audio_bytes):
-    import io
-    y, sr = librosa.load(io.BytesIO(audio_bytes), sr=16000)
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+        
+    try:
+        y, sr = librosa.load(tmp_path, sr=16000)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            
     D = librosa.amplitude_to_db(np.abs(librosa.stft(y)), ref=np.max)
     
     fig = go.Figure(data=go.Heatmap(
@@ -395,7 +428,7 @@ def create_confidence_chart(ranked_predictions):
         yaxis=dict(title='Logat', gridcolor='#333', color='white'),
         plot_bgcolor='#1e1e2e',
         paper_bgcolor='#1e1e2e',
-        height=400,
+        height=max(300, len(classes) * 50),
         margin=dict(l=0, r=0, t=40, b=0)
     )
     return fig
@@ -442,7 +475,7 @@ def create_similarity_heatmap(all_distances, class_names):
     
     if not similarities:
         fig = go.Figure()
-        fig.add_annotation(text="Tidak ada data", showarrow=False)
+        fig.add_annotation(text="Tidak ada data valid", showarrow=False)
         return fig
     
     fig = go.Figure(data=go.Heatmap(
@@ -471,7 +504,7 @@ def create_similarity_heatmap(all_distances, class_names):
 # INITIALIZATION (AUTO-LOAD & CACHE)
 # ============================================================
 
-@st.cache_resource(show_spinner="Menyiapkan AI & Memuat ZIP Data Training (Ini hanya berjalan sekali saat awal dibuka)...")
+@st.cache_resource(show_spinner="Menyiapkan AI & Memuat ZIP Data Training (Tunggu sebentar)...")
 def initialize_model():
     classifier = DTWClassifier(AudioConfig())
     success, message = classifier.auto_load_and_train()
@@ -489,27 +522,26 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Otomatis inisialisasi model dari ZIP file di direktori
+    # Otomatis inisialisasi model
     clf, is_ready, msg = initialize_model()
     
     # SIDEBAR
     with st.sidebar:
         st.markdown("### ✅ Status Model")
         if is_ready:
-            st.success("Model telah dilatih dan siap digunakan!")
+            st.success("Model siap digunakan!")
             st.markdown("**Data Terintegrasi:**")
             for cname in clf.class_names:
                 count = clf.class_counts.get(cname, 0)
                 st.markdown(f"- **{cname.replace('Logat_', '')}**: {count} sampel")
         else:
             st.error(msg)
-            st.info("Pastikan file seperti `Logat_Batak.zip`, `Logat_Jawa.zip`, dll berada pada folder yang sama dengan script ini.")
             
         st.markdown("---")
         st.markdown("### 🛠️ Pengelolaan Data")
-        st.caption("Jika Anda baru saja menambahkan file ZIP baru, klik tombol di bawah ini agar sistem membacanya.")
+        st.caption("Jika Anda baru saja menambahkan file ZIP baru ke dalam folder, klik tombol di bawah ini.")
         if st.button("🔄 Muat Ulang Semua ZIP (Refresh)", use_container_width=True):
-            st.cache_resource.clear() # Membersihkan cache agar ZIP baru terbaca
+            st.cache_resource.clear()
             if 'result' in st.session_state:
                 del st.session_state['result']
             st.rerun()
@@ -523,10 +555,10 @@ def main():
     
     # MAIN CONTENT
     if not is_ready:
-        st.warning("⚠️ Aplikasi belum bisa digunakan karena file ZIP data training tidak ditemukan.")
+        st.warning("⚠️ Aplikasi belum bisa digunakan karena tidak ada file ZIP (misal: Logat_Batak.zip) di folder tempat script ini berjalan.")
         return
 
-    # Menambahkan Tiga Tab (Upload, Rekam, Informasi)
+    # Tiga Tab (Upload, Rekam, Info)
     tab1, tab2, tab3 = st.tabs(["📁 Upload Audio", "🎤 Rekam Suara", "ℹ️ Informasi"])
 
     with tab1:
@@ -541,45 +573,43 @@ def main():
             st.audio(audio_bytes, format="audio/wav")
     
             if st.button("🔍 Mulai Analisis dari File", use_container_width=True, type="primary"):
-                with st.spinner("Sedang mengkalkulasi kemiripan (DTW)..."):
+                with st.spinner("Sedang memproses karakteristik suara..."):
                     try:
                         result = clf.predict(test_bytes=audio_bytes)
                         st.session_state['result'] = result
                         st.session_state['audio_bytes'] = audio_bytes
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Terjadi kesalahan saat memproses: {str(e)}")
+                        st.error(f"Gagal memproses file: {str(e)}")
 
     with tab2:
-        st.markdown("### 🎤 Rekam Suara Anda Langsung")
-        st.info("Fitur ini membutuhkan izin penggunaan mikrofon di browser Anda.")
+        st.markdown("### 🎤 Rekam Suara Langsung")
+        st.info("Fitur ini membutuhkan izin penggunaan mikrofon di browser Anda. Klik ikon mic untuk mulai.")
         
-        # Menggunakan fitur native audio_input dari Streamlit
-        recorded_audio = st.audio_input("Klik tombol mic di bawah ini untuk mulai merekam suara Anda:")
+        # Audio input native dari streamlit
+        recorded_audio = st.audio_input("Rekam suara Anda di sini:")
         
         if recorded_audio is not None:
             audio_bytes = recorded_audio.read()
             
             if st.button("🔍 Mulai Analisis Rekaman", use_container_width=True, type="primary"):
-                with st.spinner("Sedang mengkalkulasi kemiripan (DTW)..."):
+                with st.spinner("Sedang memproses karakteristik suara..."):
                     try:
                         result = clf.predict(test_bytes=audio_bytes)
                         st.session_state['result'] = result
                         st.session_state['audio_bytes'] = audio_bytes
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Terjadi kesalahan saat memproses: {str(e)}")
+                        st.error(f"Gagal memproses rekaman: {str(e)}")
 
     with tab3:
         st.markdown("""
-        **Cara Kerja Aplikasi:**
-        - Sistem membaca **semua file ZIP logat** (misal: `Logat_Batak.zip`, `Logat_Jawa.zip`) yang diletakkan pada folder yang sama dengan script ini.
-        - **Cache**: Streamlit mengingat data lama agar cepat dimuat. Jika Anda menambah file ZIP baru, klik tombol **"🔄 Muat Ulang Semua ZIP (Refresh)"** di panel sebelah kiri.
-        - Fitur suara diekstrak menggunakan **MFCC (Mel-Frequency Cepstral Coefficients)** dan kombinasinya (Delta & Delta-Delta).
-        - Metode **DTW (Dynamic Time Warping)** digunakan untuk mengukur kemiripan fitur waktu dari suara uji.
+        **Pembaruan Algoritma:**
+        - **Keamanan Format Audio:** Semua format audio kini ditulis ke *temporary storage* di hard disk sebelum diproses. Ini meminimalisir *error* untuk file `.m4a` atau `.mp3` yang diupload dari handphone.
+        - **Kesesuaian Prediksi:** Keputusan algoritma sekarang 100% dipandu oleh nilai kedekatan fitur suara (*confidence score*) tertinggi, bukan sekadar jumlah *voting*. Bar hijau pada grafik akan selalu menjadi tebakan utama model.
         """)
 
-    # HASIL PREDIKSI DAN VISUALISASI
+    # HASIL PREDIKSI
     if 'result' in st.session_state:
         result = st.session_state['result']
         audio_bytes = st.session_state.get('audio_bytes')
@@ -606,11 +636,10 @@ def main():
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-value">{result['k_used']}</div>
-                <div class="metric-label">Jumlah K-Neighbors Digunakan</div>
+                <div class="metric-label">K-Neighbors Terkalkulasi</div>
             </div>
             """, unsafe_allow_html=True)
 
-        # Visualisasi Waveform & Spectrogram
         st.markdown("### 📈 Karakteristik Audio")
         col1, col2 = st.columns(2)
         with col1:
@@ -618,7 +647,6 @@ def main():
         with col2:
             st.plotly_chart(create_spectrogram_plot(audio_bytes), use_container_width=True)
 
-        # Visualisasi Confidence & Gauge
         st.markdown("### 🎯 Analisis Kedekatan")
         col1, col2 = st.columns(2)
         with col1:
@@ -626,11 +654,10 @@ def main():
         with col2:
             st.plotly_chart(create_gauge_chart(result['confidence']), use_container_width=True)
 
-        # Visualisasi Heatmap
         st.markdown("### 🔥 Heatmap Kemiripan Terhadap Semua Template")
         st.plotly_chart(create_similarity_heatmap(result['all_distances'], clf.class_names), use_container_width=True)
 
-        # Download Export Data
+        # Download Export
         export_data = {
             'timestamp': datetime.now().isoformat(),
             'predicted_dialect': result['predicted_class'],
