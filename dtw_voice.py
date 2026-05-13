@@ -104,7 +104,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================
-# KONFIGURASI AUDIO
+# KONFIGURASI AUDIO (DIPERBAIKI UNTUK ANTI-BIAS)
 # ============================================================
 class AudioConfig:
     SAMPLE_RATE    = 16000
@@ -118,7 +118,7 @@ class AudioConfig:
     MIN_DURATION   = 0.05  
     K_NEIGHBORS    = 5
     DTW_WINDOW     = None
-    FIXED_DURATION = 5.0
+    FIXED_DURATION = None   # [PENTING] Dimatikan agar tidak ada zero-padding artifisial yang menguntungkan file pendek (Logat Jawa)
 
 # ============================================================
 # ADVANCED AUDIO LOADER (BYPASS FFMPEG SYSTEM)
@@ -165,11 +165,14 @@ class FeatureExtractor:
 
     def load_from_path(self, filepath: str):
         try:
-            # Gunakan fungsi kebal error
             y = load_audio_safely(filepath, sr=self.cfg.SAMPLE_RATE)
             
-            # Potong silence
-            y, _ = librosa.effects.trim(y, top_db=60) 
+            # Trim silence dengan toleransi wajar
+            y_trimmed, _ = librosa.effects.trim(y, top_db=40) 
+            
+            # Mencegah pemotongan yang membuat audio lenyap
+            if len(y_trimmed) / self.cfg.SAMPLE_RATE >= 0.1:
+                y = y_trimmed
             
             if len(y) / self.cfg.SAMPLE_RATE < self.cfg.MIN_DURATION:
                 return None
@@ -177,13 +180,7 @@ class FeatureExtractor:
             if np.max(np.abs(y)) > 0:
                 y = y / np.max(np.abs(y))
             
-            if self.cfg.FIXED_DURATION:
-                target_length = int(self.cfg.FIXED_DURATION * self.cfg.SAMPLE_RATE)
-                if len(y) > target_length:
-                    y = y[:target_length]
-                elif len(y) < target_length:
-                    y = np.pad(y, (0, target_length - len(y)))
-            
+            # Logika FIXED_DURATION telah dibuang dari sini
             return y
         except Exception:
             return None
@@ -203,7 +200,6 @@ class FeatureExtractor:
         return np.hstack(features)
 
     def extract_from_bytes(self, audio_bytes: bytes, file_name: str = 'temp.wav'):
-        # Gunakan suffix dari nama file asli agar pydub lebih mudah mengenali
         ext = Path(file_name).suffix if Path(file_name).suffix else '.wav'
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(audio_bytes)
@@ -311,7 +307,7 @@ class DTWClassifier:
                                 else:
                                     self.error_log.append(f"Gagal ekstrak MFCC: {af.name}")
                             else:
-                                self.error_log.append(f"Audio sangat pendek / rusak: {af.name}")
+                                self.error_log.append(f"Audio terlalu pendek / korup: {af.name}")
                         except Exception as e:
                             self.error_log.append(f"Format tidak terbaca: {af.name} | Error: {str(e)}")
             except Exception as e:
@@ -330,7 +326,7 @@ class DTWClassifier:
             self._trained = True
             return True, f"Berhasil memuat {len(self.class_names)} logat dengan total {sum(self.class_counts.values())} sampel."
         else:
-            return False, "Gagal mengekstrak fitur. Pastikan ZIP tidak kosong."
+            return False, "Gagal mengekstrak fitur. Pastikan ZIP berisi audio yang valid."
 
     def predict(self, test_bytes: bytes, file_name: str = 'temp.wav'):
         if not self._trained:
@@ -338,7 +334,7 @@ class DTWClassifier:
         
         feat, test_y = self.extractor.extract_from_bytes(test_bytes, file_name)
         if feat is None:
-            raise ValueError("Gagal memproses audio. File mungkin rusak atau format tidak dikenali.")
+            raise ValueError("Gagal memproses audio uji. Format mungkin tidak didukung atau file terlalu pendek.")
         
         feat = self.extractor.normalize(feat)
         
@@ -361,14 +357,15 @@ class DTWClassifier:
         else:
             ref_y = np.zeros_like(test_y) 
         
-        class_avg = {}
+        # [PENTING] LOGIKA ANTI-BIAS: 1-Best-Match Scoring
+        class_min = {}
         for cn in self.class_names:
             ds = [d for d, c, _ in all_dist if c == cn]
-            class_avg[cn] = float(np.mean(ds[:self.cfg.K_NEIGHBORS])) if ds else float('inf')
+            class_min[cn] = float(min(ds)) if ds else float('inf')
         
-        avg_arr = np.array([class_avg[c] for c in self.class_names])
-        avg_arr = np.where(np.isinf(avg_arr), 1e9, avg_arr)
-        inv = 1.0 / (avg_arr + 1e-9)
+        min_arr = np.array([class_min[c] for c in self.class_names])
+        min_arr = np.where(np.isinf(min_arr), 1e9, min_arr)
+        inv = 1.0 / (min_arr + 1e-9)
         conf = inv / inv.sum()
         conf = np.nan_to_num(conf, nan=0.0)
         
@@ -384,7 +381,7 @@ class DTWClassifier:
             'confidence': class_conf[pred],
             'ranked_predictions': ranked,
             'all_distances': all_dist,
-            'k_used': k,
+            'k_used': 1, # Representasi bahwa penentuan Confidence memakai metrik 1-terdekat
             'test_waveform': test_y,
             'ref_waveform': ref_y,
             'ref_class_name': best_match[1]
@@ -437,7 +434,7 @@ def create_confidence_chart(ranked_predictions):
     ])
     
     fig.update_layout(
-        title=dict(text='Persentase Keyakinan Algoritma', font=dict(color='white')),
+        title=dict(text='Persentase Keyakinan Klasifikasi', font=dict(color='white')),
         xaxis=dict(range=[0, 110], gridcolor='#333'),
         yaxis=dict(autorange="reversed"),
         plot_bgcolor='#1e1e2e', paper_bgcolor='#1e1e2e', height=350, margin=dict(l=20, r=20, t=40, b=20)
@@ -531,7 +528,7 @@ def main():
                 st.markdown(f"- **{cname.replace('Logat_', '')}**: {count} sampel")
                 
             if hasattr(clf, 'error_log') and clf.error_log:
-                with st.expander("⚠️ Terdapat File Gagal Dibaca", expanded=False):
+                with st.expander("⚠️ Info Ekstraksi Data", expanded=False):
                     for err in clf.error_log:
                         st.caption(err)
         else:
@@ -545,12 +542,8 @@ def main():
             st.rerun()
 
         st.markdown("---")
-        st.markdown("### ⚙️ Pengaturan Parameter")
-        new_k = st.slider("Jumlah K-Neighbors", 1, 10, clf.cfg.K_NEIGHBORS)
-        if new_k != clf.cfg.K_NEIGHBORS:
-            clf.cfg.K_NEIGHBORS = new_k
-            if 'result' in st.session_state: del st.session_state['result']
-            st.rerun()
+        st.markdown("### ⚙️ Info Algoritma")
+        st.info("Zero-padding telah dinonaktifkan. Kalkulasi jarak mengandalkan perbandingan nilai minimum antar fitur waktu.")
     
     if not is_ready:
         st.warning("⚠️ Belum ada file ZIP terdeteksi. Taruh file ZIP ke dalam folder script ini lalu klik 'Muat Ulang'.")
@@ -598,7 +591,7 @@ def main():
         with col2:
             st.markdown(f'<div class="metric-card"><div class="metric-value">{result["confidence"]*100:.1f}%</div><div class="metric-label">Skor Confidence</div></div>', unsafe_allow_html=True)
         with col3:
-            st.markdown(f'<div class="metric-card"><div class="metric-value">{result["k_used"]}</div><div class="metric-label">K-Neighbors Terkalkulasi</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-value">✓</div><div class="metric-label">Anti-Bias Mode Aktif</div></div>', unsafe_allow_html=True)
 
         st.markdown("### 📈 Visualisasi Jarak Waktu (Time Warping)")
         st.plotly_chart(create_waveform_comparison(result['test_waveform'], result['ref_waveform'], result['ref_class_name']), use_container_width=True)
