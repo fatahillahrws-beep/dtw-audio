@@ -91,7 +91,7 @@ class AudioConfig:
     N_FFT          = 512
     DELTA          = True
     DELTA_DELTA    = True
-    MIN_DURATION   = 0.05  # Sangat rendah agar file pendek logat Jawa terbaca
+    MIN_DURATION   = 0.05  
     K_NEIGHBORS    = 5
     DTW_WINDOW     = None
     FIXED_DURATION = 5.0
@@ -107,28 +107,25 @@ class FeatureExtractor:
         self._fitted = False
 
     def load_from_path(self, filepath: str):
-        try:
-            y, _ = librosa.load(filepath, sr=self.cfg.SAMPLE_RATE, mono=True)
-            
-            # Pemotongan hening diturunkan ke 60dB agar suara pelan tidak terpotong habis
-            y, _ = librosa.effects.trim(y, top_db=60) 
-            
-            if len(y) / self.cfg.SAMPLE_RATE < self.cfg.MIN_DURATION:
-                return None
-            
-            if np.max(np.abs(y)) > 0:
-                y = y / np.max(np.abs(y))
-            
-            if self.cfg.FIXED_DURATION:
-                target_length = int(self.cfg.FIXED_DURATION * self.cfg.SAMPLE_RATE)
-                if len(y) > target_length:
-                    y = y[:target_length]
-                elif len(y) < target_length:
-                    y = np.pad(y, (0, target_length - len(y)))
-            
-            return y
-        except Exception:
+        # Hapus blok try-except di sini agar error bisa ditangkap oleh fungsi pemanggil (auto_load_and_train)
+        y, _ = librosa.load(filepath, sr=self.cfg.SAMPLE_RATE, mono=True)
+        
+        y, _ = librosa.effects.trim(y, top_db=60) 
+        
+        if len(y) / self.cfg.SAMPLE_RATE < self.cfg.MIN_DURATION:
             return None
+        
+        if np.max(np.abs(y)) > 0:
+            y = y / np.max(np.abs(y))
+        
+        if self.cfg.FIXED_DURATION:
+            target_length = int(self.cfg.FIXED_DURATION * self.cfg.SAMPLE_RATE)
+            if len(y) > target_length:
+                y = y[:target_length]
+            elif len(y) < target_length:
+                y = np.pad(y, (0, target_length - len(y)))
+        
+        return y
 
     def extract_mfcc(self, y: np.ndarray) -> np.ndarray:
         cfg = self.cfg
@@ -151,6 +148,8 @@ class FeatureExtractor:
         
         try:
             y = self.load_from_path(tmp_path)
+        except Exception as e:
+            y = None
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -210,16 +209,17 @@ class DTWClassifier:
         self.cfg = config or AudioConfig()
         self.extractor = FeatureExtractor(self.cfg)
         self.templates = defaultdict(list)
-        self.raw_audios = defaultdict(list) # Menyimpan raw audio untuk grafik perbandingan
+        self.raw_audios = defaultdict(list) 
         self.class_names = []
         self._trained = False
         self.class_counts = {}
+        self.error_log = [] # Menyimpan log file yang gagal
 
     def auto_load_and_train(self):
         supported = {'.wav', '.mp3', '.m4a', '.ogg', '.flac'}
         temp_data = defaultdict(list)
+        self.error_log = [] # Reset log
         
-        # Pencarian file ZIP lebih tangguh (mengabaikan besar/kecil huruf ekstensi)
         zip_files = [p for p in Path('.').iterdir() if p.suffix.lower() == '.zip']
         
         if not zip_files:
@@ -245,12 +245,17 @@ class DTWClassifier:
                                 feat = self.extractor.extract_mfcc(y)
                                 if feat is not None:
                                     temp_data[cname].append(feat)
-                                    self.raw_audios[cname].append(y) # Simpan wave
+                                    self.raw_audios[cname].append(y) 
                                     self.class_counts[cname] = self.class_counts.get(cname, 0) + 1
-                        except Exception:
-                            pass
-            except Exception:
-                pass 
+                                else:
+                                    self.error_log.append(f"Gagal ekstrak MFCC: {af.name}")
+                            else:
+                                self.error_log.append(f"Suara kosong/terlalu pendek: {af.name}")
+                        except Exception as e:
+                            # Tangkap error jika butuh FFmpeg
+                            self.error_log.append(f"Gagal dibaca (Butuh FFmpeg / format .wav): {af.name}")
+            except Exception as e:
+                self.error_log.append(f"Gagal mengekstrak ZIP {zip_file.name}: {str(e)}")
         
         for cname, feats in temp_data.items():
             self.templates[cname].extend(feats)
@@ -265,7 +270,7 @@ class DTWClassifier:
             self._trained = True
             return True, f"Berhasil memuat {len(self.class_names)} logat."
         else:
-            return False, "Gagal mengekstrak fitur. Pastikan isi ZIP adalah audio valid."
+            return False, "Gagal mengekstrak fitur keseluruhan. Pastikan format audio sudah .WAV jika FFmpeg belum terinstal."
 
     def predict(self, test_bytes: bytes = None):
         if not self._trained:
@@ -273,7 +278,7 @@ class DTWClassifier:
         
         feat, test_y = self.extractor.extract_from_bytes(test_bytes)
         if feat is None:
-            raise ValueError("Gagal memproses audio. File mungkin rusak atau terlalu pendek.")
+            raise ValueError("Gagal memproses audio uji. Format mungkin tidak didukung (butuh FFmpeg) atau file rusak.")
         
         feat = self.extractor.normalize(feat)
         
@@ -290,7 +295,6 @@ class DTWClassifier:
         all_dist.sort(key=lambda x: x[0])
         k = min(self.cfg.K_NEIGHBORS, len(all_dist))
         
-        # Ambil waveform referensi terbaik
         best_match = all_dist[0]
         ref_y = self.raw_audios[best_match[1]][best_match[2]]
         
@@ -389,7 +393,6 @@ def create_radar_chart(ranked_predictions):
     classes = [r[0].replace('Logat_', '') for r in ranked_predictions]
     scores = [r[1] * 100 for r in ranked_predictions]
     
-    # Tutup lingkaran
     classes.append(classes[0])
     scores.append(scores[0])
     
@@ -403,7 +406,7 @@ def create_radar_chart(ranked_predictions):
     fig.update_layout(
         title=dict(text='Distribusi Radar Kekerabatan Logat', font=dict(color='white')),
         polar=dict(
-            bgcolor='#16222A', # Background gelap yang kontras
+            bgcolor='#16222A', 
             radialaxis=dict(visible=True, range=[0, 100], gridcolor='#444', color='white', tickfont=dict(color='#888')),
             angularaxis=dict(gridcolor='#555', color='white', tickfont=dict(size=13, color='white', weight='bold'))
         ),
@@ -429,7 +432,7 @@ def create_similarity_heatmap(all_distances, class_names):
     
     fig = go.Figure(data=go.Heatmap(
         z=[similarities], y=['Audio Uji'], x=labels,
-        colorscale='Turbo', # Turbo = Biru (0%) -> Hijau -> Kuning -> Merah Terang (100%)
+        colorscale='Turbo', 
         zmin=0, zmax=100,
         text=[[f'{s:.0f}%' for s in similarities]], texttemplate='%{text}', textfont={"size": 10, "color": "white"}
     ))
@@ -470,6 +473,13 @@ def main():
             for cname in clf.class_names:
                 count = clf.class_counts.get(cname, 0)
                 st.markdown(f"- **{cname.replace('Logat_', '')}**: {count} sampel")
+                
+            # TAMPILKAN LOG ERROR JIKA ADA FILE YANG GAGAL DIBACA
+            if clf.error_log:
+                with st.expander("⚠️ Terdapat File Gagal Dibaca", expanded=False):
+                    st.warning("Sebagian file dilewati. Disarankan untuk diconvert ke format .WAV.")
+                    for err in clf.error_log:
+                        st.caption(err)
         else:
             st.error(msg)
             
