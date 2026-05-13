@@ -19,7 +19,8 @@ from sklearn.preprocessing import StandardScaler
 # KONFIGURASI HALAMAN
 # ============================================================
 st.set_page_config(
-    page_title="AI Dialect Analysis System",
+    page_title="Acoustic Dialect Fingerprinting",
+    page_icon="🎙️",
     layout="wide"
 )
 
@@ -40,112 +41,85 @@ setup_audio_engine()
 import librosa
 
 # ============================================================
-# PROFESSIONAL CSS STYLING
+# PROFESSIONAL DARK THEME CSS
 # ============================================================
 st.markdown("""
 <style>
-    /* Dark Theme Optimization */
-    .stApp { background-color: #0e1117; }
+    /* Global Background */
+    .stApp { background-color: #0d1117; }
     
-    /* Header Professional */
+    /* Header Container */
     .main-header {
-        background: linear-gradient(90deg, #161b22 0%, #0d1117 100%);
-        padding: 2.5rem;
+        background: #161b22;
+        padding: 3rem;
         border-radius: 12px;
         margin-bottom: 2rem;
-        border-left: 5px solid #58a6ff;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        border-bottom: 2px solid #30363d;
+        text-align: center;
     }
     .main-header h1 {
         color: #f0f6fc;
-        font-size: 2.2rem;
-        letter-spacing: -0.5px;
-        margin: 0;
+        font-weight: 800;
+        letter-spacing: -1px;
+        margin-bottom: 0;
     }
     .main-header p {
         color: #8b949e;
-        margin-top: 0.5rem;
-        font-size: 1rem;
+        font-size: 1.1rem;
     }
 
-    /* Professional Metrics Card */
+    /* Metric Cards */
     .metric-container {
         display: flex;
-        gap: 1rem;
-        margin-bottom: 2rem;
+        gap: 1.5rem;
+        margin-bottom: 2.5rem;
     }
     .metric-card {
         flex: 1;
         background: #161b22;
-        padding: 1.5rem;
-        border-radius: 8px;
+        padding: 2rem;
+        border-radius: 10px;
         border: 1px solid #30363d;
         text-align: center;
-        transition: transform 0.2s;
-    }
-    .metric-card:hover {
-        border-color: #58a6ff;
-        transform: translateY(-2px);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
     }
     .metric-label {
         color: #8b949e;
-        font-size: 0.85rem;
+        font-size: 0.8rem;
         text-transform: uppercase;
-        letter-spacing: 1px;
-        margin-bottom: 0.5rem;
+        font-weight: 600;
+        letter-spacing: 1.5px;
     }
     .metric-value {
         color: #58a6ff;
-        font-size: 1.8rem;
+        font-size: 2.2rem;
         font-weight: 700;
+        margin-top: 0.5rem;
     }
 
-    /* Sidebar Styling */
-    section[data-testid="stSidebar"] {
+    /* Sidebar Panel */
+    [data-testid="stSidebar"] {
         background-color: #0d1117;
         border-right: 1px solid #30363d;
     }
-    
-    /* Tabs Customization */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 2rem;
-        background-color: transparent;
-    }
-    .stTabs [data-baseweb="tab"] {
-        height: 50px;
-        background-color: transparent;
-        border: none;
-        color: #8b949e;
-    }
-    .stTabs [data-baseweb="tab"]:hover { color: #58a6ff; }
-    .stTabs [aria-selected="true"] { color: #58a6ff !important; border-bottom: 2px solid #58a6ff !important; }
-
-    /* Info Box */
-    .status-box {
-        padding: 1rem;
-        background: #161b22;
-        border-radius: 6px;
-        border-left: 3px solid #238636;
-        margin: 1rem 0;
+    .sidebar-title {
+        color: #f0f6fc;
+        font-size: 1.2rem;
+        font-weight: 600;
+        margin-bottom: 1rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ============================================================
-# CLASSIFIER LOGIC (REVISED)
+# LOGIKA CORE (DIADAPTASI DARI DTW-VOICE)
 # ============================================================
 class AudioConfig:
-    def __init__(self):
-        self.SAMPLE_RATE = 16000
-        self.N_MFCC = 13
-        self.N_MELS = 40
-        self.HOP_LENGTH = 160
-        self.WIN_LENGTH = 400
-        self.N_FFT = 512
-        self.DELTA = True
-        self.DELTA_DELTA = True
-        self.MIN_DURATION = 0.1
-        self.FIXED_DURATION = None
+    SAMPLE_RATE = 16000
+    N_MFCC = 13
+    HOP_LENGTH = 160
+    WIN_LENGTH = 400
+    N_FFT = 512
 
 def load_audio_safely(filepath, sr=16000):
     try:
@@ -154,213 +128,183 @@ def load_audio_safely(filepath, sr=16000):
         pydub.AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
         audio = pydub.AudioSegment.from_file(filepath)
         audio = audio.set_frame_rate(sr).set_channels(1)
-        samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
-        return samples / (2**15)
+        return np.array(audio.get_array_of_samples(), dtype=np.float32) / 32768.0
     except:
         y, _ = librosa.load(filepath, sr=sr, mono=True)
         return y
 
-class FeatureExtractor:
-    def __init__(self, config):
-        self.cfg = config
-        self.scaler = StandardScaler()
-
-    def extract_mfcc(self, y):
+class Engine:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        
+    def extract_features(self, y):
         mfcc = librosa.feature.mfcc(y=y, sr=self.cfg.SAMPLE_RATE, n_mfcc=self.cfg.N_MFCC)
-        feat = [mfcc.T]
-        if self.cfg.DELTA: feat.append(librosa.feature.delta(mfcc).T)
-        if self.cfg.DELTA_DELTA: feat.append(librosa.feature.delta(mfcc, order=2).T)
-        return np.hstack(feat)
+        delta = librosa.feature.delta(mfcc)
+        delta2 = librosa.feature.delta(mfcc, order=2)
+        feat = np.hstack([mfcc.T, delta.T, delta2.T])
+        return (feat - np.mean(feat, axis=0)) / (np.std(feat, axis=0) + 1e-8)
 
-    def process(self, bytes_data, name):
-        with tempfile.NamedTemporaryFile(suffix=Path(name).suffix, delete=False) as tmp:
-            tmp.write(bytes_data)
-            path = tmp.name
-        try:
-            y = load_audio_safely(path, self.cfg.SAMPLE_RATE)
-            y, _ = librosa.effects.trim(y, top_db=30)
-            if len(y) < 1600: return None, None
-            return self.extract_mfcc(y), y
-        finally: os.remove(path)
+def dtw_dist(s1, s2, w):
+    n, m = len(s1), len(s2)
+    w = max(w, abs(n - m))
+    dp = np.full((n + 1, m + 1), np.inf)
+    dp[0, 0] = 0.0
+    cost_mat = cdist(s1, s2, metric='euclidean')
+    for i in range(1, n + 1):
+        for j in range(max(1, i - w), min(m, i + w) + 1):
+            dp[i, j] = cost_mat[i-1, j-1] + min(dp[i-1, j], dp[i, j-1], dp[i-1, j-1])
+    return dp[n, m] / (n + m)
 
 # ============================================================
-# MAIN APPLICATION
+# DASHBOARD MAIN
 # ============================================================
 def main():
-    # HEADER
     st.markdown("""
         <div class="main-header">
-            <h1>Acoustic Dialect Fingerprinting</h1>
-            <p>Advanced Speech Pattern Matching using Dynamic Time Warping & Mel-Frequency Cepstral Coefficients</p>
+            <h1>Dialect Pattern Recognition</h1>
+            <p>Sistem Analisis Akustik Berbasis Dynamic Time Warping</p>
         </div>
     """, unsafe_allow_html=True)
 
-    # SIDEBAR CONFIGURATION
+    # --- SIDEBAR KONFIGURASI ---
     with st.sidebar:
-        st.markdown("### Model Configuration")
-        
-        # K-Neighbors Control
-        k_val = st.slider("K-Nearest Neighbors", 1, 15, 5, 
-                          help="Jumlah sampel referensi terdekat yang dipertimbangkan untuk klasifikasi.")
-        
-        # DTW Window Control
-        st.markdown("---")
-        st.markdown("### DTW Constraints")
-        dtw_w = st.slider("Sakoe-Chiba Window", 10, 200, 50, step=10,
-                         help="Batasan pencarian sekuens waktu. Nilai lebih kecil membuat komputasi lebih cepat namun kurang fleksibel.")
-        st.caption("Unit: Time Frames (1 frame ≈ 10ms)")
+        st.markdown('<p class="sidebar-title">Model Control</p>', unsafe_allow_html=True)
+        k_val = st.slider("K-Neighbors Factor", 1, 10, 5, help="Jumlah sampel terdekat untuk validasi.")
+        dtw_w = st.slider("W-Window Constraint", 20, 300, 80, step=10, help="Batasan pergeseran waktu dalam sekuens audio.")
+        st.caption("Unit: Frames (1 frame ≈ 10ms)")
         
         st.markdown("---")
-        st.markdown("### Data Management")
-        if st.button("Refresh Training Database", use_container_width=True):
-            st.cache_resource.clear()
-            st.rerun()
-
-    # INITIALIZE ENGINE
-    cfg = AudioConfig()
-    extractor = FeatureExtractor(cfg)
-    
-    # LOAD DATABASE (Mock logic based on previous ZIP requirements)
-    @st.cache_resource
-    def load_db():
-        templates = defaultdict(list)
-        raw_waves = defaultdict(list)
+        st.markdown('<p class="sidebar-title">Database Status</p>', unsafe_allow_html=True)
+        
+        # Load ZIP logic
         zip_files = list(Path('.').glob('*.zip'))
-        
-        if not zip_files: return None, "No ZIP data found."
-        
+        if zip_files:
+            st.success(f"Aktif: {len(zip_files)} Dialek Terdeteksi")
+            for zf in zip_files:
+                st.caption(f"• {zf.name}")
+        else:
+            st.error("Data training (.zip) tidak ditemukan")
+
+    cfg = AudioConfig()
+    engine = Engine(cfg)
+
+    # Cache Database
+    @st.cache_resource
+    def init_db():
+        templates = defaultdict(list)
+        waves = defaultdict(list)
         for zf in zip_files:
             cname = zf.stem.replace("Logat_", "")
-            with tempfile.TemporaryDirectory() as tmpdir:
-                with zipfile.ZipFile(zf, 'r') as z: z.extractall(tmpdir)
-                for p in Path(tmpdir).rglob('*'):
+            with tempfile.TemporaryDirectory() as tmp:
+                with zipfile.ZipFile(zf, 'r') as z: z.extractall(tmp)
+                for p in Path(tmp).rglob('*'):
                     if p.suffix.lower() in ['.wav', '.mp3', '.m4a']:
                         y = load_audio_safely(str(p))
                         if y is not None:
-                            templates[cname].append(extractor.extract_mfcc(y))
-                            raw_waves[cname].append(y)
-        return (templates, raw_waves), "Database Synchronized"
+                            y_trim, _ = librosa.effects.trim(y, top_db=25)
+                            templates[cname].append(engine.extract_features(y_trim))
+                            waves[cname].append(y_trim)
+        return templates, waves
 
-    db, msg = load_db()
-    
-    if db is None:
-        st.error(msg)
-        return
+    db_templates, db_waves = init_db()
 
-    # TABS
-    t1, t2 = st.tabs(["Analyze File", "Real-time Capture"])
+    # --- INPUT SECTION ---
+    tab1, tab2 = st.tabs(["📂 Analisis File Audio", "🎤 Perekaman Langsung"])
+    audio_bytes = None
+    f_name = ""
 
-    audio_data = None
-    file_name = ""
+    with tab1:
+        file = st.file_uploader("Unggah sinyal akustik", type=['wav', 'mp3', 'm4a'])
+        if file: audio_bytes, f_name = file.read(), file.name
+    with tab2:
+        rec = st.audio_input("Rekam suara")
+        if rec: audio_bytes, f_name = rec.read(), "record.wav"
 
-    with t1:
-        file = st.file_uploader("Upload signal data", type=['wav', 'mp3', 'm4a'])
-        if file: 
-            audio_data = file.read()
-            file_name = file.name
+    if audio_bytes:
+        with st.spinner("Menghitung Integritas Sinyal..."):
+            feat_test, y_test = engine.process_input(audio_bytes, f_name) # Internal helper
+            
+            # Perhitungan Jarak
+            all_results = []
+            for cname, tmpls in db_templates.items():
+                for idx, t in enumerate(tmpls):
+                    d = dtw_dist(feat_test, t, dtw_w)
+                    all_results.append((d, cname, idx))
+            
+            all_results.sort(key=lambda x: x[0])
+            best = all_results[0]
+            
+            # Confidence Logic
+            class_scores = {}
+            for cname in db_templates.keys():
+                ds = [x[0] for x in all_results if x[1] == cname]
+                class_scores[cname] = min(ds)
 
-    with t2:
-        rec = st.audio_input("Capture speech")
-        if rec: 
-            audio_data = rec.read()
-            file_name = "recording.wav"
-
-    if audio_data:
-        feat_test, y_test = extractor.process(audio_data, file_name)
-        
-        if feat_test is not None:
-            # DTW ENGINE
-            with st.spinner("Executing Time Warping Analysis..."):
-                distances = []
-                for cname, tmpls in db[0].items():
-                    for idx, t in enumerate(tmpls):
-                        # Simple DTW with Window
-                        d = dtw_dist_lite(feat_test, t, dtw_w)
-                        distances.append((d, cname, idx))
-                
-                distances.sort(key=lambda x: x[0])
-                
-                # Class Min Distances for Anti-Bias
-                class_scores = {}
-                for cname in db[0].keys():
-                    ds = [x[0] for x in distances if x[1] == cname]
-                    class_scores[cname] = min(ds) if ds else 1e9
-
-            # RESULTS
-            best_match_name = distances[0][1]
-            best_match_idx = distances[0][2]
-            y_ref = db[1][best_match_name][best_match_idx]
-
-            # METRICS DISPLAY
+            # --- DISPLAY RESULTS ---
             st.markdown(f"""
                 <div class="metric-container">
                     <div class="metric-card">
-                        <div class="metric-label">Predicted Identity</div>
-                        <div class="metric-value">{best_match_name.upper()}</div>
+                        <div class="metric-label">Identitas Terdeteksi</div>
+                        <div class="metric-value">{best[1].upper()}</div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-label">Pattern Match Score</div>
-                        <div class="metric-value">{(1/(1+distances[0][0])*100):.1f}%</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-label">Active K-Factor</div>
-                        <div class="metric-value">{k_val}</div>
+                        <div class="metric-label">Pattern Match</div>
+                        <div class="metric-value">{(1/(1+best[0])*100):.1f}%</div>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
 
-            # WAVEFORM COMPARISON
+            # 1. WAVEFORM COMPARISON
             st.markdown("### Temporal Signal Alignment")
-            fig = make_subplots(rows=2, cols=1, vertical_spacing=0.2,
-                                subplot_titles=("Input Signal (Test)", f"Nearest Reference Pattern ({best_match_name})"))
-            
-            fig.add_trace(go.Scatter(y=y_test, line=dict(color='#58a6ff', width=1), name="Input"), row=1, col=1)
-            fig.add_trace(go.Scatter(y=y_ref, line=dict(color='#30363d', width=1), name="Reference"), row=2, col=1)
-            
-            fig.update_layout(height=550, template="plotly_dark", showlegend=False,
-                              margin=dict(l=20, r=20, t=50, b=20),
-                              paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-            fig.update_xaxes(title_text="Time Samples", color="#8b949e")
-            st.plotly_chart(fig, use_container_width=True)
+            y_ref = db_waves[best[1]][best[2]]
+            fig_wave = make_subplots(rows=2, cols=1, vertical_spacing=0.25,
+                                    subplot_titles=("Sinyal Input (Uji)", f"Referensi Terdekat ({best[1]})"))
+            fig_wave.add_trace(go.Scatter(y=y_test, line=dict(color='#58a6ff', width=1)), row=1, col=1)
+            fig_wave.add_trace(go.Scatter(y=y_ref, line=dict(color='#8b949e', width=1)), row=2, col=1)
+            fig_wave.update_layout(height=500, template="plotly_dark", showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig_wave, use_container_width=True)
 
-            # RADAR & RANKING
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.markdown("### Similarity Distribution")
+            col_L, col_R = st.columns(2)
+            
+            # 2. RADAR CHART
+            with col_L:
+                st.markdown("### Similarity Radar")
                 labels = list(class_scores.keys())
-                # Normalize distances to similarity percentage
                 values = [1/(1+class_scores[l])*100 for l in labels]
-                
-                radar = go.Figure(data=go.Scatterpolar(r=values + [values[0]], theta=labels + [labels[0]], 
-                                                     fill='toself', line=dict(color='#58a6ff')))
-                radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-                                    template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(radar, use_container_width=True)
-            
-            with col_b:
-                st.markdown("### Comparative Ranking")
-                ranked_items = sorted(class_scores.items(), key=lambda x: x[1])
-                for name, dist in ranked_items:
-                    sim = 1/(1+dist)*100
-                    st.write(f"**{name.upper()}**")
-                    st.progress(sim/100)
-                    st.caption(f"Index Score: {sim:.2f}%")
+                fig_radar = go.Figure(data=go.Scatterpolar(r=values + [values[0]], theta=labels + [labels[0]], fill='toself', line=dict(color='#58a6ff')))
+                fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)')
+                st.plotly_chart(fig_radar, use_container_width=True)
 
-def dtw_dist_lite(s1, s2, w):
-    n, m = len(s1), len(s2)
-    w = max(w, abs(n - m))
-    dtw_matrix = np.full((n + 1, m + 1), np.inf)
-    dtw_matrix[0, 0] = 0
-    
-    cost_mat = cdist(s1, s2, metric='euclidean')
-    
-    for i in range(1, n + 1):
-        for j in range(max(1, i - w), min(m, i + w) + 1):
-            cost = cost_mat[i-1, j-1]
-            last_min = min(dtw_matrix[i-1, j], dtw_matrix[i, j-1], dtw_matrix[i-1, j-1])
-            dtw_matrix[i, j] = cost + last_min
-            
-    return dtw_matrix[n, m] / (n + m)
+            # 3. SPECTROGRAM
+            with col_R:
+                st.markdown("### Power Spectrogram")
+                D = librosa.amplitude_to_db(np.abs(librosa.stft(y_test)), ref=np.max)
+                fig_spec = go.Figure(data=go.Heatmap(z=D, colorscale='Viridis'))
+                fig_spec.update_layout(height=400, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)')
+                st.plotly_chart(fig_spec, use_container_width=True)
+
+            # 4. RANKING LIST
+            st.markdown("### Class Comparison Ranking")
+            ranked = sorted(class_scores.items(), key=lambda x: x[1])
+            for name, dist in ranked:
+                sim = 1/(1+dist)*100
+                st.write(f"**{name.upper()}**")
+                st.progress(sim/100)
+
+    st.markdown('<div class="footer">Acoustic Analysis System | Rumah Data 2026</div>', unsafe_allow_html=True)
+
+# Helper for processing inside main
+def process_input_helper(engine, audio_bytes, f_name):
+    with tempfile.NamedTemporaryFile(suffix=Path(f_name).suffix, delete=False) as tmp:
+        tmp.write(audio_bytes)
+        path = tmp.name
+    y = load_audio_safely(path)
+    y_trim, _ = librosa.effects.trim(y, top_db=30)
+    os.remove(path)
+    return engine.extract_features(y_trim), y_trim
+
+# Patching function to engine object
+Engine.process_input = process_input_helper
 
 if __name__ == "__main__":
     main()
