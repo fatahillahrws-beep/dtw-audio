@@ -107,9 +107,7 @@ class FeatureExtractor:
         self._fitted = False
 
     def load_from_path(self, filepath: str):
-        # Hapus blok try-except di sini agar error bisa ditangkap oleh fungsi pemanggil (auto_load_and_train)
         y, _ = librosa.load(filepath, sr=self.cfg.SAMPLE_RATE, mono=True)
-        
         y, _ = librosa.effects.trim(y, top_db=60) 
         
         if len(y) / self.cfg.SAMPLE_RATE < self.cfg.MIN_DURATION:
@@ -148,7 +146,7 @@ class FeatureExtractor:
         
         try:
             y = self.load_from_path(tmp_path)
-        except Exception as e:
+        except Exception:
             y = None
         finally:
             if os.path.exists(tmp_path):
@@ -213,12 +211,12 @@ class DTWClassifier:
         self.class_names = []
         self._trained = False
         self.class_counts = {}
-        self.error_log = [] # Menyimpan log file yang gagal
+        self.error_log = [] 
 
     def auto_load_and_train(self):
         supported = {'.wav', '.mp3', '.m4a', '.ogg', '.flac'}
         temp_data = defaultdict(list)
-        self.error_log = [] # Reset log
+        self.error_log = [] 
         
         zip_files = [p for p in Path('.').iterdir() if p.suffix.lower() == '.zip']
         
@@ -248,12 +246,11 @@ class DTWClassifier:
                                     self.raw_audios[cname].append(y) 
                                     self.class_counts[cname] = self.class_counts.get(cname, 0) + 1
                                 else:
-                                    self.error_log.append(f"Gagal ekstrak MFCC: {af.name}")
+                                    self.error_log.append(f"Gagal ekstrak fitur: {af.name}")
                             else:
-                                self.error_log.append(f"Suara kosong/terlalu pendek: {af.name}")
-                        except Exception as e:
-                            # Tangkap error jika butuh FFmpeg
-                            self.error_log.append(f"Gagal dibaca (Butuh FFmpeg / format .wav): {af.name}")
+                                self.error_log.append(f"Audio kosong/terlalu pendek: {af.name}")
+                        except Exception:
+                            self.error_log.append(f"Gagal dibaca (Format tak didukung/Butuh FFmpeg): {af.name}")
             except Exception as e:
                 self.error_log.append(f"Gagal mengekstrak ZIP {zip_file.name}: {str(e)}")
         
@@ -296,7 +293,11 @@ class DTWClassifier:
         k = min(self.cfg.K_NEIGHBORS, len(all_dist))
         
         best_match = all_dist[0]
-        ref_y = self.raw_audios[best_match[1]][best_match[2]]
+        # Pengecekan aman untuk raw_audios
+        if hasattr(self, 'raw_audios') and best_match[1] in self.raw_audios and len(self.raw_audios[best_match[1]]) > best_match[2]:
+            ref_y = self.raw_audios[best_match[1]][best_match[2]]
+        else:
+            ref_y = np.zeros_like(test_y) # Fallback aman jika cache error
         
         class_avg = {}
         for cn in self.class_names:
@@ -350,11 +351,6 @@ def create_waveform_comparison(test_y, ref_y, ref_name):
         margin=dict(l=20, r=20, t=60, b=20),
         showlegend=False
     )
-    
-    fig.update_xaxes(gridcolor='#333', title_text="Waktu (detik)", row=2, col=1)
-    fig.update_yaxes(gridcolor='#333', title_text="Amplitudo", row=1, col=1)
-    fig.update_yaxes(gridcolor='#333', title_text="Amplitudo", row=2, col=1)
-    
     return fig
 
 def create_spectrogram_plot(y):
@@ -362,8 +358,6 @@ def create_spectrogram_plot(y):
     fig = go.Figure(data=go.Heatmap(z=D, colorscale='Magma', colorbar=dict(title='dB')))
     fig.update_layout(
         title=dict(text='Spektrogram Suara Uji', font=dict(color='white')),
-        xaxis=dict(title='Frame Waktu', gridcolor='#333', color='white'),
-        yaxis=dict(title='Frekuensi', gridcolor='#333', color='white'),
         plot_bgcolor='#1e1e2e', paper_bgcolor='#1e1e2e', height=300, margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig
@@ -383,8 +377,8 @@ def create_confidence_chart(ranked_predictions):
     
     fig.update_layout(
         title=dict(text='Persentase Kedekatan Logat', font=dict(color='white')),
-        xaxis=dict(title='Skor Confidence (%)', range=[0, 110], gridcolor='#333', color='white'),
-        yaxis=dict(title='', gridcolor='#333', color='white', autorange="reversed"),
+        xaxis=dict(range=[0, 110], gridcolor='#333'),
+        yaxis=dict(autorange="reversed"),
         plot_bgcolor='#1e1e2e', paper_bgcolor='#1e1e2e', height=350, margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig
@@ -399,16 +393,15 @@ def create_radar_chart(ranked_predictions):
     fig = go.Figure(data=go.Scatterpolar(
         r=scores, theta=classes, fill='toself',
         line=dict(color='#00f2fe', width=3),
-        fillcolor='rgba(0, 242, 254, 0.3)',
-        marker=dict(color='white', size=8)
+        fillcolor='rgba(0, 242, 254, 0.3)'
     ))
     
     fig.update_layout(
-        title=dict(text='Distribusi Radar Kekerabatan Logat', font=dict(color='white')),
+        title=dict(text='Distribusi Radar Kekerabatan', font=dict(color='white')),
         polar=dict(
             bgcolor='#16222A', 
-            radialaxis=dict(visible=True, range=[0, 100], gridcolor='#444', color='white', tickfont=dict(color='#888')),
-            angularaxis=dict(gridcolor='#555', color='white', tickfont=dict(size=13, color='white', weight='bold'))
+            radialaxis=dict(visible=True, range=[0, 100], gridcolor='#444', color='white'),
+            angularaxis=dict(gridcolor='#555', color='white')
         ),
         showlegend=False, plot_bgcolor='#1e1e2e', paper_bgcolor='#1e1e2e', height=380, margin=dict(l=40, r=40, t=60, b=40)
     )
@@ -432,15 +425,13 @@ def create_similarity_heatmap(all_distances, class_names):
     
     fig = go.Figure(data=go.Heatmap(
         z=[similarities], y=['Audio Uji'], x=labels,
-        colorscale='Turbo', 
-        zmin=0, zmax=100,
+        colorscale='Turbo', zmin=0, zmax=100,
         text=[[f'{s:.0f}%' for s in similarities]], texttemplate='%{text}', textfont={"size": 10, "color": "white"}
     ))
     
     fig.update_layout(
         title=dict(text='Heatmap Relatif Kemiripan Pola Suara', font=dict(color='white')),
-        xaxis=dict(title='Sampel Database', tickangle=-45, tickfont=dict(size=10, color='#cbd5e1')),
-        yaxis=dict(title='', tickfont=dict(color='white')),
+        xaxis=dict(tickangle=-45, tickfont=dict(size=10, color='#cbd5e1')),
         plot_bgcolor='#1e1e2e', paper_bgcolor='#1e1e2e', height=300, margin=dict(l=20, r=20, t=50, b=80)
     )
     return fig
@@ -465,6 +456,14 @@ def main():
     
     clf, is_ready, msg = initialize_model()
     
+    # -------------------------------------------------------------
+    # 🛑 PROTEKSI CACHE UNTUK MENCEGAH ATTRIBUTE ERROR! 🛑
+    # -------------------------------------------------------------
+    if not hasattr(clf, 'error_log') or not hasattr(clf, 'raw_audios'):
+        st.cache_resource.clear()
+        st.rerun()
+    # -------------------------------------------------------------
+    
     with st.sidebar:
         st.markdown("### ✅ Status Model")
         if is_ready:
@@ -474,10 +473,10 @@ def main():
                 count = clf.class_counts.get(cname, 0)
                 st.markdown(f"- **{cname.replace('Logat_', '')}**: {count} sampel")
                 
-            # TAMPILKAN LOG ERROR JIKA ADA FILE YANG GAGAL DIBACA
-            if clf.error_log:
+            # MENGGUNAKAN HASATTR AGAR AMAN
+            if hasattr(clf, 'error_log') and clf.error_log:
                 with st.expander("⚠️ Terdapat File Gagal Dibaca", expanded=False):
-                    st.warning("Sebagian file dilewati. Disarankan untuk diconvert ke format .WAV.")
+                    st.warning("Sebagian file dilewati. Disarankan convert ke format .WAV jika FFmpeg tidak terinstal.")
                     for err in clf.error_log:
                         st.caption(err)
         else:
@@ -495,6 +494,7 @@ def main():
         new_k = st.slider("Jumlah K-Neighbors", 1, 10, clf.cfg.K_NEIGHBORS)
         if new_k != clf.cfg.K_NEIGHBORS:
             clf.cfg.K_NEIGHBORS = new_k
+            if 'result' in st.session_state: del st.session_state['result']
             st.rerun()
     
     if not is_ready:
