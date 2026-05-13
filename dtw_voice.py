@@ -3,19 +3,20 @@ import os
 import zipfile
 import tempfile
 import json
+import subprocess
+import sys
 from pathlib import Path
 from collections import defaultdict, Counter
 from datetime import datetime
 
 import numpy as np
-import librosa
-from scipy.spatial.distance import cdist
-from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from scipy.spatial.distance import cdist
+from sklearn.preprocessing import StandardScaler
 
 # ============================================================
-# KONFIGURASI HALAMAN
+# KONFIGURASI HALAMAN (HARUS DI PALING ATAS)
 # ============================================================
 st.set_page_config(
     page_title="Dialect Classifier - Rumah Data",
@@ -24,25 +25,81 @@ st.set_page_config(
 )
 
 # ============================================================
+# SISTEM AUTO-INSTALLER FFMPEG PORTABLE (ANTI-ERROR MP3/M4A)
+# ============================================================
+@st.cache_resource(show_spinner=False)
+def setup_audio_engine():
+    """Menginstal pydub dan imageio-ffmpeg secara otomatis jika belum ada"""
+    try:
+        import pydub
+        import imageio_ffmpeg
+        import librosa
+    except ImportError:
+        st.warning("⚙️ Mengonfigurasi Mesin Audio Canggih untuk membaca file .MP3 dan .M4A... Mohon tunggu sekitar 1-2 menit.")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "pydub", "imageio-ffmpeg", "librosa"])
+            st.success("✅ Konfigurasi selesai! Memuat ulang sistem...")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Gagal menginstal dependensi: {e}")
+    return True
+
+# Jalankan auto-installer
+setup_audio_engine()
+
+# Sekarang aman untuk mengimpor librosa
+import librosa
+
+# ============================================================
 # CUSTOM CSS
 # ============================================================
 st.markdown("""
 <style>
 .main-header {
     background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-    padding: 2rem; border-radius: 20px; margin-bottom: 2rem;
-    text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    padding: 2rem;
+    border-radius: 20px;
+    margin-bottom: 2rem;
+    text-align: center;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
 }
-.main-header h1 { color: white; font-size: 2.8rem; margin-bottom: 0.5rem; font-weight: 800; }
-.main-header p { color: #e0e0e0; font-size: 1.1rem; }
+.main-header h1 {
+    color: white;
+    font-size: 2.8rem;
+    margin-bottom: 0.5rem;
+    font-weight: 800;
+}
+.main-header p {
+    color: #e0e0e0;
+    font-size: 1.1rem;
+}
 .metric-card {
     background: linear-gradient(135deg, #16222A 0%, #3A6073 100%);
-    border-radius: 15px; padding: 1.5rem; text-align: center;
-    border: 1px solid #4a90e2; box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+    border-radius: 15px;
+    padding: 1.5rem;
+    text-align: center;
+    border: 1px solid #4a90e2;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.2);
 }
-.metric-value { font-size: 2.2rem; font-weight: bold; color: #00f2fe; }
-.metric-label { color: #cbd5e1; font-size: 1rem; margin-top: 0.5rem; font-weight: 500; }
-.footer { text-align: center; padding: 2rem; color: #888; font-size: 0.9rem; border-top: 1px solid rgba(255,255,255,0.1); margin-top: 3rem; }
+.metric-value {
+    font-size: 2.2rem;
+    font-weight: bold;
+    color: #00f2fe;
+}
+.metric-label {
+    color: #cbd5e1;
+    font-size: 1rem;
+    margin-top: 0.5rem;
+    font-weight: 500;
+}
+.footer {
+    text-align: center;
+    padding: 2rem;
+    color: #888;
+    font-size: 0.9rem;
+    border-top: 1px solid rgba(255,255,255,0.1);
+    margin-top: 3rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -61,28 +118,41 @@ class AudioConfig:
     MIN_DURATION   = 0.1  
     K_NEIGHBORS    = 5
     DTW_WINDOW     = None
-    FIXED_DURATION = None
+    FIXED_DURATION = None  # [ANTI-BIAS] Dimatikan agar tidak ada penambahan zero-padding
 
 # ============================================================
-# PEMBERSIH SUARA (SUPER VAD - Pembunuh Hening)
+# ADVANCED AUDIO LOADER (BYPASS FFMPEG SYSTEM)
 # ============================================================
-def clean_audio_voice_only(y, sr):
-    """Membuang semua noise statis & durasi hening secara agresif"""
-    # Normalisasi awal untuk membaca puncak suara sesungguhnya
-    if np.max(np.abs(y)) > 0:
-        y = y / np.max(np.abs(y))
+def load_audio_safely(filepath, sr=16000):
+    """Fungsi ajaib yang bisa membaca format apapun tanpa instalasi FFmpeg OS"""
+    try:
+        import pydub
+        import imageio_ffmpeg
         
-    # Split audio: hanya ambil bagian yang bunyinya > 15 dB dari noise floor
-    intervals = librosa.effects.split(y, top_db=15)
-    
-    if len(intervals) > 0:
-        # Gabungkan potongan-potongan yang ada suaranya saja
-        y_clean = np.concatenate([y[start:end] for start, end in intervals])
-        # Jika setelah dibersihkan masih ada sisa minimal 0.1 detik, gunakan yang bersih
-        if len(y_clean) >= int(0.1 * sr):
-            return y_clean
+        # Hubungkan pydub dengan FFmpeg portable dari imageio
+        pydub.AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
+        
+        # Baca audio
+        audio = pydub.AudioSegment.from_file(filepath)
+        # Konversi ke target sample rate dan jadikan Mono
+        audio = audio.set_frame_rate(sr).set_channels(1)
+        
+        # Ekstrak array sampel
+        samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+        
+        # Normalisasi amplitudo ke [-1.0, 1.0]
+        if audio.sample_width == 2:   # 16-bit
+            samples = samples / 32768.0
+        elif audio.sample_width == 4: # 32-bit
+            samples = samples / 2147483648.0
+        elif audio.sample_width == 1: # 8-bit
+            samples = (samples - 128.0) / 128.0
             
-    return y
+        return samples
+    except Exception as e:
+        # Jika pydub gagal, coba jalur belakang menggunakan librosa bawaan
+        y, _ = librosa.load(filepath, sr=sr, mono=True)
+        return y
 
 # ============================================================
 # FEATURE EXTRACTOR
@@ -95,13 +165,21 @@ class FeatureExtractor:
 
     def load_from_path(self, filepath: str):
         try:
-            y, _ = librosa.load(filepath, sr=self.cfg.SAMPLE_RATE, mono=True)
+            # Gunakan fungsi kebal error
+            y = load_audio_safely(filepath, sr=self.cfg.SAMPLE_RATE)
             
-            # Terapkan pembersih hening tingkat tinggi
-            y = clean_audio_voice_only(y, self.cfg.SAMPLE_RATE)
+            # Potong silence (Anti-Bias Moderat)
+            y_trimmed, _ = librosa.effects.trim(y, top_db=40) 
+            
+            # Pengaman: Jika hasil potong terlalu pendek, gunakan file aslinya
+            if len(y_trimmed) / self.cfg.SAMPLE_RATE >= 0.1:
+                y = y_trimmed
             
             if len(y) / self.cfg.SAMPLE_RATE < self.cfg.MIN_DURATION:
                 return None
+            
+            if np.max(np.abs(y)) > 0:
+                y = y / np.max(np.abs(y))
             
             return y
         except Exception:
@@ -119,10 +197,10 @@ class FeatureExtractor:
             features.append(librosa.feature.delta(mfcc, order=1).T)
         if cfg.DELTA_DELTA:
             features.append(librosa.feature.delta(mfcc, order=2).T)
-            
         return np.hstack(features)
 
     def extract_from_bytes(self, audio_bytes: bytes, file_name: str = 'temp.wav'):
+        # Gunakan suffix dari nama file asli agar pydub lebih mudah mengenali
         ext = Path(file_name).suffix if Path(file_name).suffix else '.wav'
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(audio_bytes)
@@ -154,14 +232,13 @@ class FeatureExtractor:
         return features
 
 # ============================================================
-# DTW DISTANCE (MENGGUNAKAN COSINE DISTANCE ANTI-BIAS)
+# DTW DISTANCE
 # ============================================================
 def dtw_distance(seq1: np.ndarray, seq2: np.ndarray, window: int = None) -> float:
     n, m = len(seq1), len(seq2)
     if n == 0 or m == 0: return float('inf')
     
-    # [PENTING] Cosine distance fokus pada "bentuk ritme", bukan volume keras/pelan
-    cost = cdist(seq1, seq2, metric='cosine')
+    cost = cdist(seq1, seq2, metric='euclidean')
     if np.any(np.isinf(cost)) or np.any(np.isnan(cost)): return float('inf')
     
     dp = np.full((n + 1, m + 1), np.inf)
@@ -197,7 +274,7 @@ class DTWClassifier:
         self.error_log = [] 
 
     def auto_load_and_train(self):
-        supported = {'.wav', '.mp3', '.m4a', '.ogg', '.flac'}
+        supported = {'.wav', '.mp3', '.m4a', '.ogg', '.flac', '.aac', '.wma'}
         temp_data = defaultdict(list)
         self.error_log = [] 
         
@@ -250,7 +327,7 @@ class DTWClassifier:
             self._trained = True
             return True, f"Berhasil memuat {len(self.class_names)} logat dengan total {sum(self.class_counts.values())} sampel."
         else:
-            return False, "Gagal mengekstrak fitur. Pastikan format audio adalah .WAV atau Anda telah menginstal FFmpeg di sistem."
+            return False, "Gagal mengekstrak fitur. Pastikan ZIP tidak kosong."
 
     def predict(self, test_bytes: bytes, file_name: str = 'temp.wav'):
         if not self._trained:
@@ -258,7 +335,7 @@ class DTWClassifier:
         
         feat, test_y = self.extractor.extract_from_bytes(test_bytes, file_name)
         if feat is None:
-            raise ValueError("Gagal memproses audio uji. Format mungkin tidak didukung atau durasinya menjadi 0 detik setelah dibersihkan.")
+            raise ValueError("Gagal memproses audio uji. Format mungkin tidak didukung atau durasinya menjadi 0 detik.")
         
         feat = self.extractor.normalize(feat)
         
@@ -280,7 +357,7 @@ class DTWClassifier:
         else:
             ref_y = np.zeros_like(test_y) 
         
-        # [PENTING] LOGIKA ANTI-BIAS: 1-Best Match Scoring
+        # [PENTING] LOGIKA ANTI-BIAS JAWA: 1-Best Match Scoring
         class_min = {}
         for cn in self.class_names:
             ds = [d for d, c, _ in all_dist if c == cn]
@@ -289,9 +366,9 @@ class DTWClassifier:
         min_arr = np.array([class_min[c] for c in self.class_names])
         min_arr = np.where(np.isinf(min_arr), 1e9, min_arr)
         
-        # Perhitungan Persentase Logis (Inversi nilai Cosine)
-        sim_arr = 1.0 / (1.0 + min_arr)
-        conf = sim_arr / sim_arr.sum()
+        # Inversi Jarak menjadi Persentase Confidence
+        inv = 1.0 / (min_arr + 1e-9)
+        conf = inv / inv.sum()
         conf = np.nan_to_num(conf, nan=0.0)
         
         if conf.sum() == 0:
@@ -306,17 +383,18 @@ class DTWClassifier:
             'confidence': class_conf[pred],
             'ranked_predictions': ranked,
             'all_distances': all_dist,
-            'k_used': 1, # Menggunakan pendekatan 1-Best-Match per Kelas
+            'k_used': 1, 
             'test_waveform': test_y,
             'ref_waveform': ref_y,
             'ref_class_name': best_match[1]
         }
 
 # ============================================================
-# VISUALIZATION FUNCTIONS
+# VISUALIZATION FUNCTIONS (DIPERBAIKI SPASINYA)
 # ============================================================
 def create_waveform_comparison(test_y, ref_y, ref_name):
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=False, vertical_spacing=0.1,
+    # Menggunakan spacing 0.25 dan shared_xaxes=False agar label tidak tertindih
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=False, vertical_spacing=0.25,
                         subplot_titles=("Sinyal Suara Anda", f"Sinyal Logat Referensi Terdekat ({ref_name.replace('Logat_','')})"))
 
     t_test = np.arange(len(test_y)) / 16000
@@ -325,8 +403,13 @@ def create_waveform_comparison(test_y, ref_y, ref_name):
     fig.add_trace(go.Scatter(x=t_test, y=test_y, mode='lines', line=dict(color='#00f2fe', width=1.5), name='Uji', fill='tozeroy', fillcolor='rgba(0, 242, 254, 0.2)'), row=1, col=1)
     fig.add_trace(go.Scatter(x=t_ref, y=ref_y, mode='lines', line=dict(color='#4facfe', width=1.5), name='Ref', fill='tozeroy', fillcolor='rgba(79, 172, 254, 0.2)'), row=2, col=1)
 
-    fig.update_layout(title=dict(text='Perbandingan Bentuk Gelombang Waktu', font=dict(color='white')), plot_bgcolor='#1e1e2e', paper_bgcolor='#1e1e2e', height=400, margin=dict(l=20, r=20, t=60, b=20), showlegend=False)
-    fig.update_xaxes(title_text="Waktu (detik)", color="white")
+    # Tinggi grafik diubah menjadi 500px agar lega
+    fig.update_layout(title=dict(text='Perbandingan Bentuk Gelombang Waktu', font=dict(color='white')), plot_bgcolor='#1e1e2e', paper_bgcolor='#1e1e2e', height=500, margin=dict(l=20, r=20, t=60, b=20), showlegend=False)
+    
+    # Penulisan label X-axis secara spesifik untuk tiap baris agar rapi
+    fig.update_xaxes(title_text="Waktu (detik)", color="white", row=1, col=1)
+    fig.update_xaxes(title_text="Waktu (detik)", color="white", row=2, col=1)
+    
     return fig
 
 def create_spectrogram_plot(y):
@@ -416,7 +499,7 @@ def main():
 
         st.markdown("---")
         st.markdown("### ⚙️ Info Algoritma")
-        st.info("🔥 **PEMBARUAN SUPER VAD AKTIF!** Seluruh durasi hening dan *noise* kosong di-ekstraksi habis. DTW sekarang beroperasi dengan mode 'Cosine Distance' anti-bias volume.")
+        st.info("Script dilengkapi FFmpeg Bypass untuk kelancaran pembacaan M4A/MP3, serta fitur Anti-Bias Jawa (1-Best Match) dan perbaikan tata letak grafik Waveform.")
     
     if not is_ready:
         st.warning("⚠️ Belum ada file ZIP terdeteksi. Taruh file ZIP ke dalam folder script ini lalu klik 'Muat Ulang'.")
@@ -426,13 +509,13 @@ def main():
 
     with tab1:
         st.markdown("### 📂 Unggah File Suara")
-        uploaded_file = st.file_uploader("Upload file logat misterius (Direkomendasikan .WAV)", type=['wav', 'mp3', 'm4a', 'ogg', 'flac'])
+        uploaded_file = st.file_uploader("Upload file logat misterius (WAV/MP3/M4A/OGG)", type=['wav', 'mp3', 'm4a', 'ogg', 'flac'])
         if uploaded_file is not None:
             audio_bytes = uploaded_file.read()
             file_name = uploaded_file.name
             st.audio(audio_bytes)
             if st.button("🔍 Mulai Analisis Audio", use_container_width=True, type="primary"):
-                with st.spinner("Membuang noise hening dan Melakukan Time Warping..."):
+                with st.spinner("Mengekstrak Fitur MFCC & Melakukan Time Warping..."):
                     try:
                         st.session_state['result'] = clf.predict(test_bytes=audio_bytes, file_name=file_name)
                         st.rerun()
@@ -445,7 +528,7 @@ def main():
         if recorded_audio is not None:
             audio_bytes = recorded_audio.read()
             if st.button("🔍 Analisis Hasil Rekaman", use_container_width=True, type="primary"):
-                with st.spinner("Membuang noise hening dan Melakukan Time Warping..."):
+                with st.spinner("Mengekstrak Fitur MFCC & Melakukan Time Warping..."):
                     try:
                         st.session_state['result'] = clf.predict(test_bytes=audio_bytes, file_name='rekaman.wav')
                         st.rerun()
@@ -464,10 +547,9 @@ def main():
         with col2:
             st.markdown(f'<div class="metric-card"><div class="metric-value">{result["confidence"]*100:.1f}%</div><div class="metric-label">Skor Confidence</div></div>', unsafe_allow_html=True)
         with col3:
-            st.markdown(f'<div class="metric-card"><div class="metric-value">✓</div><div class="metric-label">Anti-Bias & VAD Aktif</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-value">✓</div><div class="metric-label">Anti-Bias Jawa Aktif</div></div>', unsafe_allow_html=True)
 
         st.markdown("### 📈 Visualisasi Jarak Waktu (Time Warping)")
-        st.caption("Jika Anda melihat gambar di bawah ini lebih pendek durasinya, itu karena sistem berhasil membuang seluruh keheningan yang mengganggu.")
         st.plotly_chart(create_waveform_comparison(result['test_waveform'], result['ref_waveform'], result['ref_class_name']), use_container_width=True)
 
         st.markdown("### 🎯 Rasio Kedekatan Multi-Kelas")
