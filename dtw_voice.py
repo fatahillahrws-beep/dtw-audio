@@ -19,13 +19,13 @@ from sklearn.preprocessing import StandardScaler
 # KONFIGURASI HALAMAN
 # ============================================================
 st.set_page_config(
-    page_title="Acoustic Dialect Fingerprinting",
+    page_title="Rumah Data | Dialect Intel",
     page_icon="🎙️",
     layout="wide"
 )
 
 # ============================================================
-# SISTEM SETUP (FFMPEG BYPASS)
+# SISTEM SETUP (FFMPEG BYPASS & AUDIO ENGINE)
 # ============================================================
 @st.cache_resource(show_spinner=False)
 def setup_audio_engine():
@@ -41,72 +41,111 @@ setup_audio_engine()
 import librosa
 
 # ============================================================
-# PROFESSIONAL DARK THEME CSS
+# PROFESSIONAL NAVY THEME CSS
 # ============================================================
 st.markdown("""
 <style>
-    /* Global Background */
-    .stApp { background-color: #0d1117; }
+    /* Global Styles */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
     
-    /* Header Container */
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+
+    .stApp {
+        background-color: #050a18; /* Deep Navy */
+    }
+
+    /* Professional Header */
     .main-header {
-        background: #161b22;
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
         padding: 3rem;
-        border-radius: 12px;
-        margin-bottom: 2rem;
-        border-bottom: 2px solid #30363d;
+        border-radius: 16px;
+        margin-bottom: 2.5rem;
+        border: 1px solid #1e293b;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
         text-align: center;
     }
     .main-header h1 {
-        color: #f0f6fc;
+        color: #38bdf8; /* Bright Cyan */
         font-weight: 800;
         letter-spacing: -1px;
-        margin-bottom: 0;
+        font-size: 2.8rem;
+        margin-bottom: 0.5rem;
     }
     .main-header p {
-        color: #8b949e;
+        color: #94a3b8;
         font-size: 1.1rem;
     }
 
-    /* Metric Cards */
+    /* Metric Cards Glassmorphism */
     .metric-container {
         display: flex;
         gap: 1.5rem;
-        margin-bottom: 2.5rem;
+        margin-bottom: 3rem;
     }
     .metric-card {
         flex: 1;
-        background: #161b22;
+        background: rgba(30, 41, 59, 0.7);
         padding: 2rem;
-        border-radius: 10px;
-        border: 1px solid #30363d;
+        border-radius: 12px;
+        border: 1px solid #334155;
         text-align: center;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        backdrop-filter: blur(10px);
+        transition: 0.3s;
+    }
+    .metric-card:hover {
+        border-color: #38bdf8;
+        background: rgba(30, 41, 59, 0.9);
     }
     .metric-label {
-        color: #8b949e;
-        font-size: 0.8rem;
+        color: #94a3b8;
+        font-size: 0.75rem;
         text-transform: uppercase;
         font-weight: 600;
-        letter-spacing: 1.5px;
+        letter-spacing: 2px;
     }
     .metric-value {
-        color: #58a6ff;
-        font-size: 2.2rem;
-        font-weight: 700;
+        color: #f8fafc;
+        font-size: 2.5rem;
+        font-weight: 800;
         margin-top: 0.5rem;
     }
 
-    /* Sidebar Panel */
-    [data-testid="stSidebar"] {
-        background-color: #0d1117;
-        border-right: 1px solid #30363d;
+    /* Sidebar Customization */
+    section[data-testid="stSidebar"] {
+        background-color: #0f172a;
+        border-right: 1px solid #1e293b;
     }
-    .sidebar-title {
-        color: #f0f6fc;
-        font-size: 1.2rem;
+    .sidebar-section {
+        background: #1e293b;
+        padding: 1.2rem;
+        border-radius: 10px;
+        margin-bottom: 1.5rem;
+        border: 1px solid #334155;
+    }
+    .status-indicator {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #38bdf8;
         font-weight: 600;
-        margin-bottom: 1rem;
+        font-size: 0.9rem;
+    }
+    .status-dot {
+        height: 10px;
+        width: 10px;
+        background-color: #22c55e;
+        border-radius: 50%;
+        box-shadow: 0 0 10px #22c55e;
+    }
+
+    /* Footer */
+    .footer {
+        text-align: center;
+        padding: 4rem 2rem 2rem;
+        color: #475569;
+        font-size: 0.85rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -115,11 +154,11 @@ st.markdown("""
 # LOGIKA CORE (DIADAPTASI DARI DTW-VOICE)
 # ============================================================
 class AudioConfig:
-    SAMPLE_RATE = 16000
-    N_MFCC = 13
-    HOP_LENGTH = 160
-    WIN_LENGTH = 400
-    N_FFT = 512
+    def __init__(self, k, w):
+        self.SAMPLE_RATE = 16000
+        self.N_MFCC = 13
+        self.K_NEIGHBORS = k
+        self.W_WINDOW = w
 
 def load_audio_safely(filepath, sr=16000):
     try:
@@ -139,6 +178,7 @@ class Engine:
         
     def extract_features(self, y):
         mfcc = librosa.feature.mfcc(y=y, sr=self.cfg.SAMPLE_RATE, n_mfcc=self.cfg.N_MFCC)
+        # Normalisasi fitur per-audio untuk Anti-Bias Jawa
         delta = librosa.feature.delta(mfcc)
         delta2 = librosa.feature.delta(mfcc, order=2)
         feat = np.hstack([mfcc.T, delta.T, delta2.T])
@@ -152,47 +192,51 @@ def dtw_dist(s1, s2, w):
     cost_mat = cdist(s1, s2, metric='euclidean')
     for i in range(1, n + 1):
         for j in range(max(1, i - w), min(m, i + w) + 1):
-            dp[i, j] = cost_mat[i-1, j-1] + min(dp[i-1, j], dp[i, j-1], dp[i-1, j-1])
+            cost = cost_mat[i-1, j-1]
+            dp[i, j] = cost + min(dp[i-1, j], dp[i, j-1], dp[i-1, j-1])
     return dp[n, m] / (n + m)
 
 # ============================================================
-# DASHBOARD MAIN
+# MAIN APPLICATION
 # ============================================================
 def main():
+    # SIDEBAR PREMIUM
+    with st.sidebar:
+        st.markdown('<div class="sidebar-section">', unsafe_allow_html=True)
+        st.markdown('<div class="status-indicator"><div class="status-dot"></div>CORE ENGINE ACTIVE</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown("### ⚙️ Engine Parameters")
+        k_val = st.slider("Neighbors Factor (K)", 1, 15, 5, help="Metrik validasi k-NN")
+        dtw_w = st.slider("Time Window (W)", 20, 300, 80, step=10, help="Constraint Sakoe-Chiba (Frames)")
+        st.caption("Unit: 1 Frame ≈ 10ms")
+        
+        st.markdown("---")
+        st.markdown("### 🛠️ Maintenance")
+        if st.button("Purge & Reload Database", use_container_width=True):
+            st.cache_resource.clear()
+            st.rerun()
+
+    # HEADER
     st.markdown("""
         <div class="main-header">
-            <h1>Dialect Pattern Recognition</h1>
-            <p>Sistem Analisis Akustik Berbasis Dynamic Time Warping</p>
+            <h1>Rumah Data Dialect Fingerprinting</h1>
+            <p>Sistem Analisis Pola Suara Berbasis Dynamic Time Warping & MFCC</p>
         </div>
     """, unsafe_allow_html=True)
 
-    # --- SIDEBAR KONFIGURASI ---
-    with st.sidebar:
-        st.markdown('<p class="sidebar-title">Model Control</p>', unsafe_allow_html=True)
-        k_val = st.slider("K-Neighbors Factor", 1, 10, 5, help="Jumlah sampel terdekat untuk validasi.")
-        dtw_w = st.slider("W-Window Constraint", 20, 300, 80, step=10, help="Batasan pergeseran waktu dalam sekuens audio.")
-        st.caption("Unit: Frames (1 frame ≈ 10ms)")
-        
-        st.markdown("---")
-        st.markdown('<p class="sidebar-title">Database Status</p>', unsafe_allow_html=True)
-        
-        # Load ZIP logic
-        zip_files = list(Path('.').glob('*.zip'))
-        if zip_files:
-            st.success(f"Aktif: {len(zip_files)} Dialek Terdeteksi")
-            for zf in zip_files:
-                st.caption(f"• {zf.name}")
-        else:
-            st.error("Data training (.zip) tidak ditemukan")
-
-    cfg = AudioConfig()
+    # DATABASE LOADING
+    cfg = AudioConfig(k_val, dtw_w)
     engine = Engine(cfg)
 
-    # Cache Database
     @st.cache_resource
     def init_db():
         templates = defaultdict(list)
         waves = defaultdict(list)
+        # Menghapus listing ZIP polos sesuai permintaan user
+        zip_files = list(Path('.').glob('*.zip'))
+        if not zip_files: return None, None
+        
         for zf in zip_files:
             cname = zf.stem.replace("Logat_", "")
             with tempfile.TemporaryDirectory() as tmp:
@@ -201,44 +245,66 @@ def main():
                     if p.suffix.lower() in ['.wav', '.mp3', '.m4a']:
                         y = load_audio_safely(str(p))
                         if y is not None:
-                            y_trim, _ = librosa.effects.trim(y, top_db=25)
-                            templates[cname].append(engine.extract_features(y_trim))
-                            waves[cname].append(y_trim)
+                            # Split hening tingkat tinggi
+                            y_vocal = librosa.effects.split(y, top_db=20)
+                            if len(y_vocal) > 0:
+                                y = np.concatenate([y[s:e] for s, e in y_vocal])
+                            templates[cname].append(engine.extract_features(y))
+                            waves[cname].append(y)
         return templates, waves
 
     db_templates, db_waves = init_db()
 
-    # --- INPUT SECTION ---
-    tab1, tab2 = st.tabs(["📂 Analisis File Audio", "🎤 Perekaman Langsung"])
+    if db_templates is None:
+        st.error("No training data detected in local directory.")
+        return
+
+    # INPUT INTERFACE
+    tab1, tab2 = st.tabs(["📁 ANALYZE FILE", "🎤 CAPTURE AUDIO"])
     audio_bytes = None
     f_name = ""
 
     with tab1:
-        file = st.file_uploader("Unggah sinyal akustik", type=['wav', 'mp3', 'm4a'])
+        file = st.file_uploader("Upload Acoustic Signal", type=['wav', 'mp3', 'm4a'])
         if file: audio_bytes, f_name = file.read(), file.name
     with tab2:
-        rec = st.audio_input("Rekam suara")
-        if rec: audio_bytes, f_name = rec.read(), "record.wav"
+        rec = st.audio_input("Start Voice Capture")
+        if rec: audio_bytes, f_name = rec.read(), "live_stream.wav"
 
     if audio_bytes:
-        with st.spinner("Menghitung Integritas Sinyal..."):
-            feat_test, y_test = engine.process_input(audio_bytes, f_name) # Internal helper
+        with st.spinner("Processing Signal Integrity..."):
+            # Process Input
+            with tempfile.NamedTemporaryFile(suffix=Path(f_name).suffix, delete=False) as tmp:
+                tmp.write(audio_bytes)
+                path = tmp.name
+            y_test = load_audio_safely(path)
+            y_vocal_t = librosa.effects.split(y_test, top_db=20)
+            if len(y_vocal_t) > 0:
+                y_test = np.concatenate([y_test[s:e] for s, e in y_vocal_t])
+            feat_test = engine.extract_features(y_test)
+            os.remove(path)
+
+            # DTW Calculation
+            results = []
+            heatmap_data = []
+            heatmap_labels = []
             
-            # Perhitungan Jarak
-            all_results = []
             for cname, tmpls in db_templates.items():
                 for idx, t in enumerate(tmpls):
                     d = dtw_dist(feat_test, t, dtw_w)
-                    all_results.append((d, cname, idx))
+                    results.append((d, cname, idx))
+                    # Simpan data untuk heatmap
+                    sim_pct = (1/(1+d)*100)
+                    heatmap_data.append(sim_pct)
+                    heatmap_labels.append(f"{cname} #{idx+1}")
+
+            results.sort(key=lambda x: x[0])
+            best = results[0]
             
-            all_results.sort(key=lambda x: x[0])
-            best = all_results[0]
-            
-            # Confidence Logic
-            class_scores = {}
+            class_min_scores = {}
             for cname in db_templates.keys():
-                ds = [x[0] for x in all_results if x[1] == cname]
-                class_scores[cname] = min(ds)
+                ds = [x[0] for x in results if x[1] == cname]
+                class_min_scores[cname] = min(ds)
 
             # --- DISPLAY RESULTS ---
             st.markdown(f"""
@@ -248,63 +314,58 @@ def main():
                         <div class="metric-value">{best[1].upper()}</div>
                     </div>
                     <div class="metric-card">
-                        <div class="metric-label">Pattern Match</div>
+                        <div class="metric-label">Confidence Score</div>
                         <div class="metric-value">{(1/(1+best[0])*100):.1f}%</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">Status Algoritma</div>
+                        <div class="metric-value" style="color:#22c55e">STABLE</div>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
 
-            # 1. WAVEFORM COMPARISON
-            st.markdown("### Temporal Signal Alignment")
+            # 1. HEATMAP (KEMBALI)
+            st.markdown("### 🗺️ Heatmap Kemiripan Pola (Cross-Database)")
+            h_matrix = np.array(heatmap_data).reshape(1, -1)
+            fig_h = go.Figure(data=go.Heatmap(
+                z=h_matrix, x=heatmap_labels, y=['Uji'],
+                colorscale='Viridis', zmin=0, zmax=100,
+                text=[[f"{v:.1f}%" for v in heatmap_data]], texttemplate="%{text}"
+            ))
+            fig_h.update_layout(height=250, margin=dict(l=0, r=0, t=10, b=0), template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig_h, use_container_width=True)
+
+            # 2. WAVEFORM ALIGNMENT
+            st.markdown("### 📈 Temporal Signal Alignment")
             y_ref = db_waves[best[1]][best[2]]
-            fig_wave = make_subplots(rows=2, cols=1, vertical_spacing=0.25,
-                                    subplot_titles=("Sinyal Input (Uji)", f"Referensi Terdekat ({best[1]})"))
-            fig_wave.add_trace(go.Scatter(y=y_test, line=dict(color='#58a6ff', width=1)), row=1, col=1)
-            fig_wave.add_trace(go.Scatter(y=y_ref, line=dict(color='#8b949e', width=1)), row=2, col=1)
-            fig_wave.update_layout(height=500, template="plotly_dark", showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig_wave, use_container_width=True)
+            fig_w = make_subplots(rows=2, cols=1, vertical_spacing=0.25,
+                                 subplot_titles=("Sinyal Input Test", f"Referensi Database ({best[1]})"))
+            fig_w.add_trace(go.Scatter(y=y_test, line=dict(color='#38bdf8', width=1.5)), row=1, col=1)
+            fig_w.add_trace(go.Scatter(y=y_ref, line=dict(color='#64748b', width=1.5)), row=2, col=1)
+            fig_w.update_layout(height=500, template="plotly_dark", showlegend=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig_w, use_container_width=True)
 
-            col_L, col_R = st.columns(2)
+            # 3. RADAR & RANKING
+            c1, c2 = st.columns([1.2, 1])
+            with c1:
+                st.markdown("### 🎯 Similarity Distribution Radar")
+                lbls = list(class_min_scores.keys())
+                vls = [1/(1+class_min_scores[l])*100 for l in lbls]
+                fig_r = go.Figure(data=go.Scatterpolar(r=vls + [vls[0]], theta=lbls + [lbls[0]], fill='toself', 
+                                                     fillcolor='rgba(56, 189, 248, 0.2)', line=dict(color='#38bdf8', width=3)))
+                fig_r.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)')
+                st.plotly_chart(fig_r, use_container_width=True)
             
-            # 2. RADAR CHART
-            with col_L:
-                st.markdown("### Similarity Radar")
-                labels = list(class_scores.keys())
-                values = [1/(1+class_scores[l])*100 for l in labels]
-                fig_radar = go.Figure(data=go.Scatterpolar(r=values + [values[0]], theta=labels + [labels[0]], fill='toself', line=dict(color='#58a6ff')))
-                fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig_radar, use_container_width=True)
+            with c2:
+                st.markdown("### 📊 Class Probability Ranking")
+                ranked = sorted(class_min_scores.items(), key=lambda x: x[1])
+                for name, dist in ranked:
+                    sim = 1/(1+dist)*100
+                    st.write(f"**{name.upper()}**")
+                    st.progress(sim/100)
+                    st.caption(f"Index: {sim:.2f}%")
 
-            # 3. SPECTROGRAM
-            with col_R:
-                st.markdown("### Power Spectrogram")
-                D = librosa.amplitude_to_db(np.abs(librosa.stft(y_test)), ref=np.max)
-                fig_spec = go.Figure(data=go.Heatmap(z=D, colorscale='Viridis'))
-                fig_spec.update_layout(height=400, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig_spec, use_container_width=True)
-
-            # 4. RANKING LIST
-            st.markdown("### Class Comparison Ranking")
-            ranked = sorted(class_scores.items(), key=lambda x: x[1])
-            for name, dist in ranked:
-                sim = 1/(1+dist)*100
-                st.write(f"**{name.upper()}**")
-                st.progress(sim/100)
-
-    st.markdown('<div class="footer">Acoustic Analysis System | Rumah Data 2026</div>', unsafe_allow_html=True)
-
-# Helper for processing inside main
-def process_input_helper(engine, audio_bytes, f_name):
-    with tempfile.NamedTemporaryFile(suffix=Path(f_name).suffix, delete=False) as tmp:
-        tmp.write(audio_bytes)
-        path = tmp.name
-    y = load_audio_safely(path)
-    y_trim, _ = librosa.effects.trim(y, top_db=30)
-    os.remove(path)
-    return engine.extract_features(y_trim), y_trim
-
-# Patching function to engine object
-Engine.process_input = process_input_helper
+    st.markdown('<div class="footer">Rumah Data 2026 | Built for Professional Acoustic Research</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
