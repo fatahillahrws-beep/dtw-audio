@@ -23,9 +23,6 @@ from scipy.spatial.distance import cdist
 from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
 import plotly.express as px
-from plotly.subplots import make_subplots
-import sounddevice as sd
-import soundfile as sf
 import pandas as pd
 
 # ============================================================
@@ -154,6 +151,15 @@ st.markdown("""
         border-radius: 20px;
         font-size: 0.8rem;
         margin: 0.2rem;
+    }
+    
+    /* Audio recorder styling */
+    .audio-recorder-container {
+        background: #1e1e2e;
+        border-radius: 15px;
+        padding: 1.5rem;
+        text-align: center;
+        border: 1px solid rgba(102, 126, 234, 0.3);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -621,20 +627,13 @@ def create_gauge_chart(confidence):
     return fig
 
 # ============================================================
-# AUDIO RECORDER
+# AUDIO RECORDER (Menggunakan streamlit's audio input)
 # ============================================================
 
-def record_audio(duration=5, sample_rate=16000):
-    """Rekam audio dari microphone"""
-    st.write("🎤 Sedang merekam... Bicara sekarang!")
-    recording = sd.rec(int(duration * sample_rate), samplerate=sample_rate, channels=1, dtype='float32')
-    sd.wait()
-    recording = recording.flatten()
-    return recording, sample_rate
-
-def save_recording(recording, sample_rate, filename="recorded_audio.wav"):
-    """Simpan rekaman ke file"""
-    sf.write(filename, recording, sample_rate)
+def save_uploaded_audio(uploaded_file, filename="uploaded_audio.wav"):
+    """Simpan audio yang diupload ke file temporary"""
+    with open(filename, "wb") as f:
+        f.write(uploaded_file.getbuffer())
     return filename
 
 # ============================================================
@@ -786,31 +785,14 @@ def main():
         return
     
     # Tab untuk input audio
-    tab1, tab2 = st.tabs(["🎤 Rekam Suara", "📁 Upload Audio"])
+    tab1, tab2 = st.tabs(["📁 Upload Audio", "ℹ️ Info"])
     
     audio_path = None
     
     with tab1:
-        st.markdown("### Rekam Suara Langsung")
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            duration = st.number_input("Durasi rekaman (detik)", min_value=1, max_value=10, value=3)
-        with col2:
-            st.markdown("---")
-            if st.button("🎙️ Mulai Rekam", use_container_width=True):
-                recording, sr = record_audio(duration=duration)
-                audio_path = save_recording(recording, sr, "temp_recording.wav")
-                st.audio(audio_path, format="audio/wav")
-                st.success("✅ Rekaman selesai!")
-        with col3:
-            if audio_path and os.path.exists(audio_path):
-                if st.button("🔍 Analisis", use_container_width=True):
-                    st.session_state['test_audio'] = audio_path
-                    st.rerun()
-    
-    with tab2:
         st.markdown("### Upload File Audio")
+        st.markdown("Upload file audio untuk dianalisis logatnya:")
+        
         uploaded_file = st.file_uploader(
             "Pilih file audio",
             type=['wav', 'mp3', 'm4a', 'ogg', 'flac'],
@@ -819,14 +801,46 @@ def main():
         
         if uploaded_file is not None:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_file:
-                tmp_file.write(uploaded_file.read())
+                tmp_file.write(uploaded_file.getbuffer())
                 audio_path = tmp_file.name
             
             st.audio(audio_path, format="audio/wav")
             
-            if st.button("🔍 Analisis", use_container_width=True):
-                st.session_state['test_audio'] = audio_path
-                st.rerun()
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔍 Analisis Audio", use_container_width=True, type="primary"):
+                    st.session_state['test_audio'] = audio_path
+                    st.rerun()
+            with col2:
+                if st.button("🗑️ Hapus", use_container_width=True):
+                    if os.path.exists(audio_path):
+                        os.unlink(audio_path)
+                    st.rerun()
+    
+    with tab2:
+        st.markdown("""
+        <div class="card">
+            <div class="card-title">ℹ️ Tentang Aplikasi</div>
+            <p><strong>Dialect Classifier</strong> adalah aplikasi untuk mengklasifikasikan logat suara menggunakan:</p>
+            <ul>
+                <li><strong>MFCC</strong> (Mel-Frequency Cepstral Coefficients) - Ekstraksi fitur audio</li>
+                <li><strong>DTW</strong> (Dynamic Time Warping) - Pengukuran kemiripan temporal</li>
+                <li><strong>k-NN</strong> (k-Nearest Neighbors) - Klasifikasi</li>
+            </ul>
+            <p><strong>Cara Penggunaan:</strong></p>
+            <ol>
+                <li>Upload ZIP file training di sidebar (satu ZIP per logat)</li>
+                <li>Klik "Train Model" untuk melatih model</li>
+                <li>Upload file audio yang ingin dites</li>
+                <li>Klik "Analisis Audio" untuk melihat hasil klasifikasi</li>
+            </ol>
+            <p><strong>Format ZIP yang didukung:</strong></p>
+            <ul>
+                <li>File ZIP berisi folder dengan nama logat, atau langsung file audio di root</li>
+                <li>Format audio: WAV, MP3, M4A, OGG, FLAC</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
     
     # Analisis dan hasil
     if 'test_audio' in st.session_state and os.path.exists(st.session_state['test_audio']):
@@ -836,7 +850,7 @@ def main():
             try:
                 result = clf.predict(test_path)
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Error: {str(e)}")
                 del st.session_state['test_audio']
                 st.rerun()
         
@@ -951,7 +965,7 @@ def main():
         with col2:
             if st.button("🔄 Analisis Baru", use_container_width=True):
                 del st.session_state['test_audio']
-                if os.path.exists(test_path) and test_path != "temp_recording.wav":
+                if os.path.exists(test_path):
                     os.unlink(test_path)
                 st.rerun()
     
