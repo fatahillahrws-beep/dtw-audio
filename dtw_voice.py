@@ -216,27 +216,44 @@ class DTWClassifier:
         self._trained = False
         self.class_counts = {}
 
-    def load_from_folder(self, folder_path: str):
+    def load_from_zips(self, folder_path: str):
+        """Membaca dan mengekstrak semua file ZIP dari folder secara dinamis"""
         supported = {'.wav', '.mp3', '.m4a', '.ogg', '.flac', '.opus'}
         temp_data = defaultdict(list)
         
         folder = Path(folder_path)
         
         if not folder.exists():
-            raise FileNotFoundError(f"Folder {folder_path} tidak ditemukan!")
+            raise FileNotFoundError(f"Folder '{folder_path}' tidak ditemukan! Buat foldernya dan masukkan file zip.")
         
-        for class_dir in folder.iterdir():
-            if class_dir.is_dir():
-                cname = class_dir.name
-                audio_files = [f for f in class_dir.rglob('*') if f.suffix.lower() in supported]
+        zip_files = list(folder.glob('*.zip'))
+        if not zip_files:
+            raise FileNotFoundError(f"Tidak ada file .zip di dalam folder '{folder_path}'!")
+        
+        for zip_file in zip_files:
+            # Menggunakan nama file zip sebagai nama kelas (misal: "Logat_Batak" dari "Logat_Batak.zip")
+            cname = zip_file.stem 
+            
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with zipfile.ZipFile(zip_file, 'r') as zf:
+                    zf.extractall(tmpdir)
+                
+                tmppath = Path(tmpdir)
+                audio_files = [f for f in tmppath.rglob('*') if f.suffix.lower() in supported]
                 
                 for af in audio_files:
-                    y = self.extractor.load_from_bytes(open(str(af), 'rb').read())
-                    if y is not None:
-                        feat = self.extractor.extract_mfcc(y)
-                        if feat is not None:
-                            temp_data[cname].append(feat)
-                            self.class_counts[cname] = self.class_counts.get(cname, 0) + 1
+                    try:
+                        with open(str(af), 'rb') as f:
+                            audio_bytes = f.read()
+                            
+                        y = self.extractor.load_from_bytes(audio_bytes)
+                        if y is not None:
+                            feat = self.extractor.extract_mfcc(y)
+                            if feat is not None:
+                                temp_data[cname].append(feat)
+                                self.class_counts[cname] = self.class_counts.get(cname, 0) + 1
+                    except Exception as e:
+                        pass # Abaikan file yang korup/tidak bisa dibaca
         
         for cname, feats in temp_data.items():
             self.templates[cname].extend(feats)
@@ -479,137 +496,147 @@ def main():
     with st.sidebar:
         st.markdown("### 📁 Training Data")
         
-        TRAINING_FOLDER = "training_data"
+        # Folder tempat menyimpan file-file .zip logat
+        TRAINING_FOLDER = "training_zips" 
         
         if not st.session_state['training_loaded']:
-            if st.button("📂 Load Training Data", use_container_width=True):
-                with st.spinner("Loading..."):
+            st.info(f"Masukkan semua file .zip (misal: Logat_Batak.zip) ke dalam folder lokal bernama '{TRAINING_FOLDER}' terlebih dahulu.")
+            if st.button("📂 Load Data dari ZIP", use_container_width=True):
+                with st.spinner("Mengekstrak dan memuat file ZIP..."):
                     try:
-                        class_counts = clf.load_from_folder(TRAINING_FOLDER)
+                        class_counts = clf.load_from_zips(TRAINING_FOLDER)
                         st.session_state['training_loaded'] = True
-                        st.success(f"✅ Loaded {len(class_counts)} classes!")
+                        st.success(f"✅ Berhasil memuat {len(class_counts)} logat!")
                         for cname, count in class_counts.items():
-                            st.markdown(f"- {cname}: {count} samples")
+                            st.markdown(f"- {cname}: {count} sampel audio")
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
         
         if st.session_state['training_loaded'] and not st.session_state['trained']:
             if st.button("🚀 Train Model", use_container_width=True):
-                with st.spinner("Training..."):
+                with st.spinner("Sedang memproses fitur..."):
                     clf.fit_scaler()
                     st.session_state['trained'] = True
-                    st.success("✅ Model siap!")
+                    st.success("✅ Model siap digunakan!")
                     st.rerun()
         
         if st.session_state['trained']:
             st.markdown("---")
-            st.markdown("### ✅ Model Status")
+            st.markdown("### ✅ Status Model")
             for cname in clf.class_names:
                 count = clf.class_counts.get(cname, 0)
-                st.markdown(f"- {cname}: {count} samples")
+                st.markdown(f"- **{cname}**: {count} sampel")
             
-            if st.button("🔄 Reset", use_container_width=True):
+            if st.button("🔄 Reset Keseluruhan", use_container_width=True):
                 st.session_state['classifier'] = DTWClassifier(AudioConfig())
                 st.session_state['trained'] = False
                 st.session_state['training_loaded'] = False
+                if 'result' in st.session_state:
+                    del st.session_state['result']
                 st.rerun()
         
         st.markdown("---")
-        st.markdown("### ⚙️ Settings")
+        st.markdown("### ⚙️ Pengaturan")
         k_neighbors = st.slider("K-Neighbors", 1, 10, 5)
-        if st.button("Apply", use_container_width=True):
+        if st.button("Terapkan", use_container_width=True):
             clf.cfg.K_NEIGHBORS = k_neighbors
             if st.session_state['trained']:
                 clf.fit_scaler()
-            st.success("Applied!")
+            st.success("Berhasil diterapkan!")
     
     # MAIN CONTENT
     if not st.session_state['trained']:
-        st.info("👈 Klik 'Load Training Data' lalu 'Train Model'")
-        st.info("""
-        **Struktur folder:**
+        st.info("👈 Silakan atur Training Data di panel sebelah kiri terlebih dahulu (klik 'Load Data dari ZIP' lalu 'Train Model').")
+        st.markdown(f"""
+        **Persiapan:**
+        1. Buat folder bernama `training_zips` satu lokasi dengan script ini.
+        2. Masukkan semua file zip (seperti `Logat_Batak.zip`, `Logat_Jawa.zip`, dll) ke dalam folder tersebut.
         """)
         return
 
-    tab1, tab2 = st.tabs(["📁 Upload Audio", "ℹ️ Info"])
+    tab1, tab2 = st.tabs(["📁 Upload Audio", "ℹ️ Informasi"])
 
     with tab1:
         uploaded_file = st.file_uploader(
-                "Pilih file audio",
-                type=['wav', 'mp3', 'm4a', 'ogg', 'flac']
-                )
+            "Pilih file audio yang ingin dianalisis (Logat misterius)",
+            type=['wav', 'mp3', 'm4a', 'ogg', 'flac']
+        )
 
         if uploaded_file is not None:
             audio_bytes = uploaded_file.read()
             st.audio(audio_bytes, format="audio/wav")
     
-            if st.button("🔍 Analisis", use_container_width=True, type="primary"):
-                with st.spinner("Menganalisis..."):
+            if st.button("🔍 Mulai Analisis", use_container_width=True, type="primary"):
+                with st.spinner("Sedang mengkalkulasi kemiripan (DTW)..."):
                     try:
                         result = clf.predict(test_bytes=audio_bytes)
                         st.session_state['result'] = result
                         st.session_state['audio_bytes'] = audio_bytes
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Error: {str(e)}")
+                        st.error(f"Terjadi kesalahan saat memproses: {str(e)}")
 
     with tab2:
         st.markdown("""
-        **Dialect Classifier** menggunakan:
-        - **MFCC** untuk ekstraksi fitur
-        - **DTW** untuk pengukuran kemiripan
-        - **k-NN** untuk klasifikasi
-
-        **Training Data:** Batak, Jawa, Melayu, Papua, Sunda
+        **Cara Kerja Aplikasi:**
+        - Sistem membaca **file ZIP per logat** dari folder lokal dan menjadikan nama file zip tersebut sebagai nama kelas (misal: Logat_Sunda.zip menjadi kelas Logat_Sunda).
+        - Fitur suara diekstrak menggunakan **MFCC (Mel-Frequency Cepstral Coefficients)** dan kombinasinya (Delta & Delta-Delta).
+        - Metode **DTW (Dynamic Time Warping)** digunakan untuk mengukur kemiripan fitur waktu dari suara uji terhadap semua template suara latih.
+        - Keputusan akhir diambil menggunakan algoritma k-NN.
         """)
 
-    # HASIL
+    # HASIL PREDIKSI DAN VISUALISASI
     if 'result' in st.session_state:
         result = st.session_state['result']
         audio_bytes = st.session_state.get('audio_bytes')
 
         st.markdown("---")
-        st.markdown("## 📊 Hasil Klasifikasi")
+        st.markdown("## 📊 Hasil Analisis")
 
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown(f"""
             <div class="metric-card">
-                <div class="metric-value">{result['predicted_class']}</div>
-                <div class="metric-label">Prediksi Logat</div>
+                <div class="metric-value">{result['predicted_class'].replace('_', ' ')}</div>
+                <div class="metric-label">Prediksi Logat Terkuat</div>
             </div>
             """, unsafe_allow_html=True)
         with col2:
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-value">{result['confidence']*100:.1f}%</div>
-                <div class="metric-label">Confidence</div>
+                <div class="metric-label">Tingkat Keyakinan (Confidence)</div>
             </div>
             """, unsafe_allow_html=True)
         with col3:
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-value">{result['k_used']}</div>
-                <div class="metric-label">K-Neighbors</div>
+                <div class="metric-label">Jumlah K-Neighbors Digunakan</div>
             </div>
             """, unsafe_allow_html=True)
 
-        # Visualisasi
+        # Visualisasi Waveform & Spectrogram
+        st.markdown("### 📈 Karakteristik Audio")
         col1, col2 = st.columns(2)
         with col1:
             st.plotly_chart(create_waveform_plot(audio_bytes), use_container_width=True)
         with col2:
             st.plotly_chart(create_spectrogram_plot(audio_bytes), use_container_width=True)
 
+        # Visualisasi Confidence & Gauge
+        st.markdown("### 🎯 Analisis Kedekatan")
         col1, col2 = st.columns(2)
         with col1:
             st.plotly_chart(create_confidence_chart(result['ranked_predictions']), use_container_width=True)
         with col2:
             st.plotly_chart(create_gauge_chart(result['confidence']), use_container_width=True)
 
+        # Visualisasi Heatmap
+        st.markdown("### 🔥 Heatmap Kemiripan Terhadap Semua Template")
         st.plotly_chart(create_similarity_heatmap(result['all_distances'], clf.class_names), use_container_width=True)
 
-        # Export
+        # Download Export Data
         export_data = {
             'timestamp': datetime.now().isoformat(),
             'predicted_dialect': result['predicted_class'],
@@ -619,17 +646,17 @@ def main():
         }
 
         st.download_button(
-            label="📥 Download JSON",
+            label="📥 Download Laporan (JSON)",
             data=json.dumps(export_data, indent=2),
-            file_name=f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            file_name=f"hasil_klasifikasi_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
             mime="application/json"
         )
 
-        if st.button("🔄 Analisis Baru"):
+        if st.button("🔄 Analisis File Lain"):
             del st.session_state['result']
             st.rerun()
 
-    st.markdown('<div class="footer"><p>Dialect Classifier | DTW + MFCC</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="footer"><p>Dialect Classifier | DTW + MFCC | Rumah Data</p></div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
