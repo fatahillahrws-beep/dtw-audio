@@ -86,7 +86,7 @@ def apply_ui_design():
         .metric-label { color: #64748b; font-size: 0.75rem; text-transform: uppercase; font-weight: 800; letter-spacing: 2px; }
         .metric-value { color: #38bdf8; font-size: 2.8rem; font-weight: 800; margin-top: 10px; }
 
-        /* CRITICAL: FIX UNTUK KESEJAJARAN KOTAK ANALISIS */
+        /* Professional Analysis Box - Forced Alignment */
         .analysis-box {
             background: rgba(15, 23, 42, 0.7);
             padding: 1.8rem;
@@ -94,9 +94,7 @@ def apply_ui_design():
             border-left: 4px solid #38bdf8;
             margin-top: 1rem;
             margin-bottom: 2rem;
-            
-            /* Memaksa semua kotak memiliki tinggi minimal yang sama agar sejajar */
-            min-height: 240px; 
+            min-height: 250px; 
             display: flex;
             flex-direction: column;
             justify-content: flex-start;
@@ -118,8 +116,20 @@ def apply_ui_design():
         }
         .status-main { color: #38bdf8; font-size: 2rem; font-weight: 800; }
         
-        /* Progress Bar Customization */
-        .stProgress > div > div > div > div { background-color: #38bdf8; }
+        /* Tab Customization */
+        .stTabs [data-baseweb="tab-list"] { gap: 10px; }
+        .stTabs [data-baseweb="tab"] {
+            background-color: #0f172a;
+            border: 1px solid #1e293b;
+            padding: 10px 25px;
+            border-radius: 8px 8px 0 0;
+            color: #94a3b8;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: #1e293b;
+            color: #38bdf8 !important;
+            border-bottom: 2px solid #38bdf8 !important;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -151,14 +161,14 @@ class AcousticCore:
 
     def extract_dialect_features(self, y):
         """Ekstraksi MFCC dengan deteksi VAD internal."""
-        # Split silence secara agresif
+        # Split silence secara agresif untuk anti-bias
         yt, _ = librosa.effects.trim(y, top_db=25)
         mfcc = librosa.feature.mfcc(y=yt, sr=self.SR, n_mfcc=self.N_MFCC)
-        # Tambahkan delta temporal
+        # Tambahkan delta temporal (ritme)
         d1 = librosa.feature.delta(mfcc)
         d2 = librosa.feature.delta(mfcc, order=2)
         features = np.hstack([mfcc.T, d1.T, d2.T])
-        # Z-score normalization
+        # Z-score normalization per audio
         return (features - np.mean(features, axis=0)) / (np.std(features, axis=0) + 1e-8), mfcc, yt
 
 def dtw_fast_engine(s1, s2, w_constraint):
@@ -182,6 +192,10 @@ class VizEngine:
     def get_navy_scale():
         return [[0, '#050a18'], [0.4, '#1e3a8a'], [1, '#38bdf8']]
 
+    @staticmethod
+    def get_amber_scale():
+        return [[0, '#050a18'], [0.5, '#1e293b'], [1, '#fbbf24']]
+
     def plot_waveform(self, y_in, y_ref, label):
         fig = make_subplots(rows=2, cols=1, vertical_spacing=0.25, 
                             subplot_titles=("Input Signal Profile", f"Master Template: {label}"))
@@ -204,6 +218,18 @@ class VizEngine:
                           template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)')
         return fig
 
+    def plot_spectral(self, y_in):
+        sc = librosa.feature.spectral_centroid(y=y_in, sr=16000)[0]
+        fig = go.Figure(); fig.add_trace(go.Scatter(y=sc, line=dict(color='#fbbf24', width=1.5), fill='tozeroy'))
+        fig.update_layout(height=350, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=10,b=0))
+        return fig
+
+    def plot_delta(self, mfcc):
+        delta = librosa.feature.delta(mfcc)
+        fig = go.Figure(data=go.Heatmap(z=delta, colorscale=self.get_amber_scale(), zmid=0))
+        fig.update_layout(height=300, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=10,b=0))
+        return fig
+
 # ==============================================================================
 # [6] ANALYTICAL PIPELINE EXECUTION
 # ==============================================================================
@@ -211,10 +237,10 @@ def start_system():
     zips = list(Path('.').glob('*.zip'))
     
     with st.sidebar:
-        st.markdown(f"""<div class="status-card"><div style="color:#64748b;font-size:0.7rem;font-weight:800;text-transform:uppercase;">Repository Status</div><div class="status-main">{len(zips)} Dialects</div><div style="color:#22c55e;font-size:0.75rem;font-weight:700;">● ENGINE OPTIMIZED</div></div>""", unsafe_allow_html=True)
-        k_val = st.slider("Sensitivity (K)", 1, 15, 5)
-        w_val = st.slider("Window (W)", 20, 400, 120, step=10)
-        if st.button("Re-Sync Database", use_container_width=True):
+        st.markdown(f"""<div class="status-card"><div style="color:#64748b;font-size:0.7rem;font-weight:800;text-transform:uppercase;">Computational Repository</div><div class="status-main">{len(zips)} Dialects</div><div style="color:#22c55e;font-size:0.75rem;font-weight:700;">● ENGINE OPTIMIZED</div></div>""", unsafe_allow_html=True)
+        k_val = st.slider("Classification Sensitivity (K)", 1, 15, 5)
+        w_val = st.slider("Dynamic Alignment Window (W)", 20, 400, 120, step=10)
+        if st.button("Reload Global Intelligence", use_container_width=True):
             st.cache_resource.clear(); st.rerun()
 
     st.markdown("""<div class="main-header"><h1>Acoustic Intelligence Analysis</h1><p>PATTERN RECOGNITION LABORATORY SYSTEM V3.6.0</p></div>""", unsafe_allow_html=True)
@@ -240,16 +266,23 @@ def start_system():
     db_t, db_w = load_db()
     if not db_t: st.error("No acoustic assets detected."); return
 
-    audio_bytes = None
-    u = st.file_uploader("Signal Input", type=['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg'], label_visibility="collapsed")
-    if u: audio_bytes = u.read()
+    # --- INTERFACE TABS (RESTORED RECORD FEATURE) ---
+    tab_f, tab_r = st.tabs(["IDENTIFY SIGNAL FILE", "REAL-TIME CAPTURE"])
+    audio_bytes, source_name = None, ""
+
+    with tab_f:
+        u = st.file_uploader("Signal Input", type=['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg'], label_visibility="collapsed")
+        if u: audio_bytes, source_name = u.read(), u.name
+    with tab_r:
+        m = st.audio_input("Initialize microphone capture", label_visibility="collapsed")
+        if m: audio_bytes, source_name = m.read(), "stream_live.wav"
 
     if audio_bytes:
-        with st.spinner("Decoding spectral coefficients..."):
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        with st.spinner("Executing spectral decomposition..."):
+            with tempfile.NamedTemporaryFile(suffix=Path(source_name).suffix, delete=False) as tmp:
                 tmp.write(audio_bytes); p = tmp.name
-            y_in = core.load_audio(p)
-            f_in, mfcc_in, y_in_t = core.extract_dialect_features(y_in)
+            y_raw = core.load_audio(p)
+            f_in, mfcc_in, y_in_t = core.extract_dialect_features(y_raw)
             os.remove(p)
 
             res, h_v, h_l = [], [], []
@@ -261,46 +294,41 @@ def start_system():
 
             res.sort(key=lambda x: x[0])
             winner, idx_w = res[0][1], res[0][2]
+            certainty = (1/(1+res[0][0])*100)
             
-            # RESULTS
-            c1, c2, c3 = st.columns(3)
-            with c1: st.markdown(f'<div class="metric-card"><div class="metric-label">Detected Identity</div><div class="metric-value">{winner}</div></div>', unsafe_allow_html=True)
-            with c2: st.markdown(f'<div class="metric-card"><div class="metric-label">Confidence Score</div><div class="metric-value">{(1/(1+res[0][0])*100):.1f}%</div></div>', unsafe_allow_html=True)
-            with c3: st.markdown(f'<div class="metric-card"><div class="metric-label">Signal Status</div><div class="metric-value" style="color:#22c55e">OPTIMAL</div></div>', unsafe_allow_html=True)
+            # --- PRESENTATION LAYER ---
+            c_m1, c_m2, c_m3 = st.columns(3)
+            with c_m1: st.markdown(f'<div class="metric-card"><div class="metric-label">Identitas Dialek</div><div class="metric-value">{winner}</div></div>', unsafe_allow_html=True)
+            with c_m2: st.markdown(f'<div class="metric-card"><div class="metric-label">Confidence Index</div><div class="metric-value">{certainty:.1f}%</div></div>', unsafe_allow_html=True)
+            with c_m3: st.markdown(f'<div class="metric-card"><div class="metric-label">VAD Engine</div><div class="metric-value" style="color:#22c55e">ACTIVE</div></div>', unsafe_allow_html=True)
 
             # 1. WAVEFORM
-            st.markdown("### 1. Temporal Signal Alignment")
+            st.markdown("### 1. Temporal Signal Consistency Map")
             st.plotly_chart(viz.plot_waveform(y_in_t, db_waves[winner][idx_w], winner), use_container_width=True)
-            st.markdown(f"""<div class="analysis-box"><span class="analysis-title">🔬 Analisis Konsistensi Temporal</span><p class="analysis-text">Grafik waveform di atas memetakan sinkronisasi antara sinyal suara Anda dengan master template database. Logat <b>{winner}</b> mendominasi karena memiliki kesamaan pola modulasi tekanan suara pada setiap fonem. Algoritma DTW berhasil mensejajarkan perbedaan tempo bicara (warping), membuktikan bahwa ritme artikulasi Anda sangat identik dengan profil dialek ini.</p></div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div class="analysis-box"><span class="analysis-title">🔬 Analisis Konsistensi Temporal</span><p class="analysis-text">Grafik waveform di atas memetakan sinkronisasi modulasi tekanan suara antara input dan template master. Logat <b>{winner}</b> mendominasi karena memiliki struktur penekanan suku kata dan ritme bicara yang paling identik. Decoder Universal memastikan integritas sinyal tetap terjaga meskipun audio berasal dari format terkompresi.</p></div>""", unsafe_allow_html=True)
 
             # 2. HEATMAP
             st.markdown("### 2. Spectral Similarity Matrix")
             st.plotly_chart(viz.plot_heatmap(h_v, h_l), use_container_width=True)
             st.markdown(f"""<div class="analysis-box"><span class="analysis-title">🔬 Analisis Korelasi Matriks</span><p class="analysis-text">Matriks kemiripan spektral ini memetakan korelasi fitur MFCC di seluruh database menggunakan palet Cyber-Navy. Area berwarna biru cerah pada kolom <b>{winner}</b> mengindikasikan densitas kecocokan fitur suara yang paling stabil dan konsisten. Hal ini meminimalkan bias klasifikasi karena sistem mendeteksi kedekatan fitur yang menyeluruh pada seluruh sampel data tersebut.</p></div>""", unsafe_allow_html=True)
 
-            # 3 & 4. RADAR & SPECTRAL (ALIGNED COLUMNS)
+            # 3 & 4. RADAR & SPECTRAL (ALIGNED)
             col_l, col_r = st.columns(2)
             with col_l:
-                st.markdown("### 3. Probability Radar")
+                st.markdown("### 3. Probability Distribution Radar")
                 u_labs = list(db_t.keys())
                 v_radar = [1/(1+min([x[0] for x in res if x[1]==L]))*100 for L in u_labs]
                 st.plotly_chart(viz.plot_radar(u_labs, v_radar), use_container_width=True)
                 st.markdown(f"""<div class="analysis-box"><span class="analysis-title">🔬 Analisis Distribusi Radar</span><p class="analysis-text">Radar distribusi menunjukkan tarikan vektor probabilitas yang condong secara eksklusif ke arah <b>{winner}</b>. Hal ini mengonfirmasi bahwa morfologi vokal Anda memiliki ciri fonetik yang unik dan tidak tumpang tindih (overlap) dengan dialek referensi lainnya dalam sistem, sehingga klasifikasi ini memiliki tingkat kepastian yang tinggi.</p></div>""", unsafe_allow_html=True)
 
             with col_r:
-                st.markdown("### 4. Acoustic Brightness")
-                sc = librosa.feature.spectral_centroid(y=y_in_t, sr=16000)[0]
-                fig_s = go.Figure(); fig_s.add_trace(go.Scatter(y=sc, line=dict(color='#fbbf24', width=1.5), fill='tozeroy'))
-                fig_s.update_layout(height=350, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=10,b=0))
-                st.plotly_chart(fig_s, use_container_width=True)
+                st.markdown("### 4. Acoustic Spectral Brightness")
+                st.plotly_chart(viz.plot_spectral(y_in_t), use_container_width=True)
                 st.markdown(f"""<div class="analysis-box"><span class="analysis-title">🔬 Analisis Kecerahan Akustik</span><p class="analysis-text">Spectral Centroid mengukur "pusat massa" spektrum frekuensi suara. Pola kecerahan (intonasi) pada sinyal uji ini menunjukkan profil energi frekuensi tinggi yang sangat spesifik bagi logat <b>{winner}</b>. Ini mencerminkan karakteristik "melodi" bicara yang sering ditemukan pada penutur asli daerah tersebut dalam database penelitian kami.</p></div>""", unsafe_allow_html=True)
 
             # 5. DELTA MFCC
             st.markdown("### 5. Velocity of Speech Features (Delta)")
-            delta = librosa.feature.delta(mfcc_in)
-            fig_d = go.Figure(data=go.Heatmap(z=delta, colorscale=[[0, '#050a18'], [0.5, '#1e293b'], [1, '#fbbf24']], zmid=0))
-            fig_d.update_layout(height=300, template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', margin=dict(l=0,r=0,t=10,b=0))
-            st.plotly_chart(fig_d, use_container_width=True)
+            st.plotly_chart(viz.plot_delta(mfcc_in), use_container_width=True)
             st.markdown(f"""<div class="analysis-box"><span class="analysis-title">🔬 Analisis Transisi Dinamis</span><p class="analysis-text">Heatmap Delta menggunakan aksen Cyber-Amber untuk menonjolkan kecepatan perubahan fonem (ritme tempo). Kedekatan pada grafik ini menunjukkan bahwa dinamika bicara Anda memiliki profil kecepatan artikulasi yang sinkron dengan karakteristik temporal <b>{winner}</b>, memperkuat hasil deteksi dari sisi durasi dan tempo.</p></div>""", unsafe_allow_html=True)
 
             # RANKING
@@ -308,7 +336,7 @@ def start_system():
             final_r = sorted({L: 1/(1+min([x[0] for x in res if x[1]==L]))*100 for L in db_t.keys()}.items(), key=lambda x: x[1], reverse=True)
             for n, s in final_r: st.write(f"**{n}**"); st.progress(s/100)
 
-    st.markdown('<div class="footer">Acoustic Research Intelligence © 2026 | Built for Precision Spectral Analysis</div>', unsafe_allow_html=True)
+    st.markdown('<div class="footer">Acoustic Intelligence Research Platform © 2026 | Built for Precision Acoustic Analysis</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     start_system()
