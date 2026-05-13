@@ -3,21 +3,21 @@ import os
 import zipfile
 import tempfile
 import json
+import subprocess
+import sys
 from pathlib import Path
 from collections import defaultdict, Counter
 from datetime import datetime
 
 import numpy as np
-import librosa
-from scipy.spatial.distance import cdist
-from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from scipy.spatial.distance import cdist
+from sklearn.preprocessing import StandardScaler
 
 # ============================================================
-# KONFIGURASI HALAMAN
+# KONFIGURASI HALAMAN (HARUS DI PALING ATAS)
 # ============================================================
-
 st.set_page_config(
     page_title="Dialect Classifier - Rumah Data",
     page_icon="🎙️",
@@ -25,9 +25,34 @@ st.set_page_config(
 )
 
 # ============================================================
+# SISTEM AUTO-INSTALLER FFMPEG PORTABLE (ANTI-ERROR MP3/M4A)
+# ============================================================
+@st.cache_resource(show_spinner=False)
+def setup_audio_engine():
+    """Menginstal pydub dan imageio-ffmpeg secara otomatis jika belum ada"""
+    try:
+        import pydub
+        import imageio_ffmpeg
+        import librosa
+    except ImportError:
+        st.warning("⚙️ Mengonfigurasi Mesin Audio Canggih untuk membaca file .MP3 dan .M4A... Mohon tunggu sekitar 1-2 menit.")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "pydub", "imageio-ffmpeg", "librosa"])
+            st.success("✅ Konfigurasi selesai! Memuat ulang sistem...")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Gagal menginstal dependensi: {e}")
+    return True
+
+# Jalankan auto-installer
+setup_audio_engine()
+
+# Sekarang aman untuk mengimpor librosa
+import librosa
+
+# ============================================================
 # CUSTOM CSS
 # ============================================================
-
 st.markdown("""
 <style>
 .main-header {
@@ -81,7 +106,6 @@ st.markdown("""
 # ============================================================
 # KONFIGURASI AUDIO
 # ============================================================
-
 class AudioConfig:
     SAMPLE_RATE    = 16000
     N_MFCC         = 13
@@ -97,9 +121,42 @@ class AudioConfig:
     FIXED_DURATION = 5.0
 
 # ============================================================
+# ADVANCED AUDIO LOADER (BYPASS FFMPEG SYSTEM)
+# ============================================================
+def load_audio_safely(filepath, sr=16000):
+    """Fungsi ajaib yang bisa membaca format apapun tanpa instalasi FFmpeg OS"""
+    try:
+        import pydub
+        import imageio_ffmpeg
+        
+        # Hubungkan pydub dengan FFmpeg portable dari imageio
+        pydub.AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
+        
+        # Baca audio
+        audio = pydub.AudioSegment.from_file(filepath)
+        # Konversi ke target sample rate dan jadikan Mono
+        audio = audio.set_frame_rate(sr).set_channels(1)
+        
+        # Ekstrak array sampel
+        samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+        
+        # Normalisasi amplitudo ke [-1.0, 1.0]
+        if audio.sample_width == 2:   # 16-bit
+            samples = samples / 32768.0
+        elif audio.sample_width == 4: # 32-bit
+            samples = samples / 2147483648.0
+        elif audio.sample_width == 1: # 8-bit
+            samples = (samples - 128.0) / 128.0
+            
+        return samples
+    except Exception as e:
+        # Jika pydub gagal, coba jalur belakang menggunakan librosa bawaan
+        y, _ = librosa.load(filepath, sr=sr, mono=True)
+        return y
+
+# ============================================================
 # FEATURE EXTRACTOR
 # ============================================================
-
 class FeatureExtractor:
     def __init__(self, config: AudioConfig = None):
         self.cfg = config or AudioConfig()
@@ -107,23 +164,29 @@ class FeatureExtractor:
         self._fitted = False
 
     def load_from_path(self, filepath: str):
-        y, _ = librosa.load(filepath, sr=self.cfg.SAMPLE_RATE, mono=True)
-        y, _ = librosa.effects.trim(y, top_db=60) 
-        
-        if len(y) / self.cfg.SAMPLE_RATE < self.cfg.MIN_DURATION:
+        try:
+            # Gunakan fungsi kebal error
+            y = load_audio_safely(filepath, sr=self.cfg.SAMPLE_RATE)
+            
+            # Potong silence
+            y, _ = librosa.effects.trim(y, top_db=60) 
+            
+            if len(y) / self.cfg.SAMPLE_RATE < self.cfg.MIN_DURATION:
+                return None
+            
+            if np.max(np.abs(y)) > 0:
+                y = y / np.max(np.abs(y))
+            
+            if self.cfg.FIXED_DURATION:
+                target_length = int(self.cfg.FIXED_DURATION * self.cfg.SAMPLE_RATE)
+                if len(y) > target_length:
+                    y = y[:target_length]
+                elif len(y) < target_length:
+                    y = np.pad(y, (0, target_length - len(y)))
+            
+            return y
+        except Exception:
             return None
-        
-        if np.max(np.abs(y)) > 0:
-            y = y / np.max(np.abs(y))
-        
-        if self.cfg.FIXED_DURATION:
-            target_length = int(self.cfg.FIXED_DURATION * self.cfg.SAMPLE_RATE)
-            if len(y) > target_length:
-                y = y[:target_length]
-            elif len(y) < target_length:
-                y = np.pad(y, (0, target_length - len(y)))
-        
-        return y
 
     def extract_mfcc(self, y: np.ndarray) -> np.ndarray:
         cfg = self.cfg
@@ -139,8 +202,10 @@ class FeatureExtractor:
             features.append(librosa.feature.delta(mfcc, order=2).T)
         return np.hstack(features)
 
-    def extract_from_bytes(self, audio_bytes: bytes):
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+    def extract_from_bytes(self, audio_bytes: bytes, file_name: str = 'temp.wav'):
+        # Gunakan suffix dari nama file asli agar pydub lebih mudah mengenali
+        ext = Path(file_name).suffix if Path(file_name).suffix else '.wav'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp.write(audio_bytes)
             tmp_path = tmp.name
         
@@ -172,7 +237,6 @@ class FeatureExtractor:
 # ============================================================
 # DTW DISTANCE
 # ============================================================
-
 def dtw_distance(seq1: np.ndarray, seq2: np.ndarray, window: int = None) -> float:
     n, m = len(seq1), len(seq2)
     if n == 0 or m == 0: return float('inf')
@@ -201,7 +265,6 @@ def dtw_distance(seq1: np.ndarray, seq2: np.ndarray, window: int = None) -> floa
 # ============================================================
 # CLASSIFIER
 # ============================================================
-
 class DTWClassifier:
     def __init__(self, config: AudioConfig = None):
         self.cfg = config or AudioConfig()
@@ -214,7 +277,7 @@ class DTWClassifier:
         self.error_log = [] 
 
     def auto_load_and_train(self):
-        supported = {'.wav', '.mp3', '.m4a', '.ogg', '.flac'}
+        supported = {'.wav', '.mp3', '.m4a', '.ogg', '.flac', '.aac', '.wma'}
         temp_data = defaultdict(list)
         self.error_log = [] 
         
@@ -246,11 +309,11 @@ class DTWClassifier:
                                     self.raw_audios[cname].append(y) 
                                     self.class_counts[cname] = self.class_counts.get(cname, 0) + 1
                                 else:
-                                    self.error_log.append(f"Gagal ekstrak fitur: {af.name}")
+                                    self.error_log.append(f"Gagal ekstrak MFCC: {af.name}")
                             else:
-                                self.error_log.append(f"Audio kosong/terlalu pendek: {af.name}")
-                        except Exception:
-                            self.error_log.append(f"Gagal dibaca (Format tak didukung/Butuh FFmpeg): {af.name}")
+                                self.error_log.append(f"Audio sangat pendek / rusak: {af.name}")
+                        except Exception as e:
+                            self.error_log.append(f"Format tidak terbaca: {af.name} | Error: {str(e)}")
             except Exception as e:
                 self.error_log.append(f"Gagal mengekstrak ZIP {zip_file.name}: {str(e)}")
         
@@ -265,17 +328,17 @@ class DTWClassifier:
             for cname in self.templates:
                 self.templates[cname] = [self.extractor.normalize(f) for f in self.templates[cname]]
             self._trained = True
-            return True, f"Berhasil memuat {len(self.class_names)} logat."
+            return True, f"Berhasil memuat {len(self.class_names)} logat dengan total {sum(self.class_counts.values())} sampel."
         else:
-            return False, "Gagal mengekstrak fitur keseluruhan. Pastikan format audio sudah .WAV jika FFmpeg belum terinstal."
+            return False, "Gagal mengekstrak fitur. Pastikan ZIP tidak kosong."
 
-    def predict(self, test_bytes: bytes = None):
+    def predict(self, test_bytes: bytes, file_name: str = 'temp.wav'):
         if not self._trained:
             raise RuntimeError("Belum training!")
         
-        feat, test_y = self.extractor.extract_from_bytes(test_bytes)
+        feat, test_y = self.extractor.extract_from_bytes(test_bytes, file_name)
         if feat is None:
-            raise ValueError("Gagal memproses audio uji. Format mungkin tidak didukung (butuh FFmpeg) atau file rusak.")
+            raise ValueError("Gagal memproses audio. File mungkin rusak atau format tidak dikenali.")
         
         feat = self.extractor.normalize(feat)
         
@@ -293,11 +356,10 @@ class DTWClassifier:
         k = min(self.cfg.K_NEIGHBORS, len(all_dist))
         
         best_match = all_dist[0]
-        # Pengecekan aman untuk raw_audios
         if hasattr(self, 'raw_audios') and best_match[1] in self.raw_audios and len(self.raw_audios[best_match[1]]) > best_match[2]:
             ref_y = self.raw_audios[best_match[1]][best_match[2]]
         else:
-            ref_y = np.zeros_like(test_y) # Fallback aman jika cache error
+            ref_y = np.zeros_like(test_y) 
         
         class_avg = {}
         for cn in self.class_names:
@@ -331,11 +393,10 @@ class DTWClassifier:
 # ============================================================
 # VISUALIZATION FUNCTIONS
 # ============================================================
-
 def create_waveform_comparison(test_y, ref_y, ref_name):
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
                         vertical_spacing=0.1,
-                        subplot_titles=("Suara Uji (Anda)", f"Referensi Terdekat ({ref_name.replace('Logat_','')})"))
+                        subplot_titles=("Sinyal Suara Anda", f"Sinyal Logat Referensi ({ref_name.replace('Logat_','')})"))
 
     t_test = np.arange(len(test_y)) / 16000
     t_ref = np.arange(len(ref_y)) / 16000
@@ -344,7 +405,7 @@ def create_waveform_comparison(test_y, ref_y, ref_name):
     fig.add_trace(go.Scatter(x=t_ref, y=ref_y, mode='lines', line=dict(color='#4facfe', width=1.5), name='Ref', fill='tozeroy', fillcolor='rgba(79, 172, 254, 0.2)'), row=2, col=1)
 
     fig.update_layout(
-        title=dict(text='Perbandingan Waveform (Pola Gelombang)', font=dict(color='white')),
+        title=dict(text='Perbandingan Waveform Audio', font=dict(color='white')),
         plot_bgcolor='#1e1e2e',
         paper_bgcolor='#1e1e2e',
         height=400,
@@ -357,7 +418,7 @@ def create_spectrogram_plot(y):
     D = librosa.amplitude_to_db(np.abs(librosa.stft(y)), ref=np.max)
     fig = go.Figure(data=go.Heatmap(z=D, colorscale='Magma', colorbar=dict(title='dB')))
     fig.update_layout(
-        title=dict(text='Spektrogram Suara Uji', font=dict(color='white')),
+        title=dict(text='Spektrogram Suara Anda', font=dict(color='white')),
         plot_bgcolor='#1e1e2e', paper_bgcolor='#1e1e2e', height=300, margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig
@@ -376,7 +437,7 @@ def create_confidence_chart(ranked_predictions):
     ])
     
     fig.update_layout(
-        title=dict(text='Persentase Kedekatan Logat', font=dict(color='white')),
+        title=dict(text='Persentase Keyakinan Algoritma', font=dict(color='white')),
         xaxis=dict(range=[0, 110], gridcolor='#333'),
         yaxis=dict(autorange="reversed"),
         plot_bgcolor='#1e1e2e', paper_bgcolor='#1e1e2e', height=350, margin=dict(l=20, r=20, t=40, b=20)
@@ -393,11 +454,12 @@ def create_radar_chart(ranked_predictions):
     fig = go.Figure(data=go.Scatterpolar(
         r=scores, theta=classes, fill='toself',
         line=dict(color='#00f2fe', width=3),
-        fillcolor='rgba(0, 242, 254, 0.3)'
+        fillcolor='rgba(0, 242, 254, 0.3)',
+        marker=dict(color='white', size=8)
     ))
     
     fig.update_layout(
-        title=dict(text='Distribusi Radar Kekerabatan', font=dict(color='white')),
+        title=dict(text='Distribusi Kekerabatan Logat', font=dict(color='white')),
         polar=dict(
             bgcolor='#16222A', 
             radialaxis=dict(visible=True, range=[0, 100], gridcolor='#444', color='white'),
@@ -430,7 +492,7 @@ def create_similarity_heatmap(all_distances, class_names):
     ))
     
     fig.update_layout(
-        title=dict(text='Heatmap Relatif Kemiripan Pola Suara', font=dict(color='white')),
+        title=dict(text='Heatmap Relatif Database (Merah = Sangat Mirip)', font=dict(color='white')),
         xaxis=dict(tickangle=-45, tickfont=dict(size=10, color='#cbd5e1')),
         plot_bgcolor='#1e1e2e', paper_bgcolor='#1e1e2e', height=300, margin=dict(l=20, r=20, t=50, b=80)
     )
@@ -439,7 +501,6 @@ def create_similarity_heatmap(all_distances, class_names):
 # ============================================================
 # MAIN APP
 # ============================================================
-
 @st.cache_resource(show_spinner="Menyiapkan AI & Membaca ZIP Data Training...")
 def initialize_model():
     classifier = DTWClassifier(AudioConfig())
@@ -456,13 +517,9 @@ def main():
     
     clf, is_ready, msg = initialize_model()
     
-    # -------------------------------------------------------------
-    # 🛑 PROTEKSI CACHE UNTUK MENCEGAH ATTRIBUTE ERROR! 🛑
-    # -------------------------------------------------------------
     if not hasattr(clf, 'error_log') or not hasattr(clf, 'raw_audios'):
         st.cache_resource.clear()
         st.rerun()
-    # -------------------------------------------------------------
     
     with st.sidebar:
         st.markdown("### ✅ Status Model")
@@ -473,10 +530,8 @@ def main():
                 count = clf.class_counts.get(cname, 0)
                 st.markdown(f"- **{cname.replace('Logat_', '')}**: {count} sampel")
                 
-            # MENGGUNAKAN HASATTR AGAR AMAN
             if hasattr(clf, 'error_log') and clf.error_log:
                 with st.expander("⚠️ Terdapat File Gagal Dibaca", expanded=False):
-                    st.warning("Sebagian file dilewati. Disarankan convert ke format .WAV jika FFmpeg tidak terinstal.")
                     for err in clf.error_log:
                         st.caption(err)
         else:
@@ -505,14 +560,15 @@ def main():
 
     with tab1:
         st.markdown("### 📂 Unggah File Suara")
-        uploaded_file = st.file_uploader("Format didukung: WAV, MP3, M4A, OGG", type=['wav', 'mp3', 'm4a', 'ogg', 'flac'])
+        uploaded_file = st.file_uploader("Upload file logat misterius (WAV/MP3/M4A/OGG)", type=['wav', 'mp3', 'm4a', 'ogg', 'flac'])
         if uploaded_file is not None:
             audio_bytes = uploaded_file.read()
-            st.audio(audio_bytes, format="audio/wav")
+            file_name = uploaded_file.name
+            st.audio(audio_bytes)
             if st.button("🔍 Mulai Analisis Audio", use_container_width=True, type="primary"):
-                with st.spinner("Menghitung jarak pola suara (DTW)..."):
+                with st.spinner("Mengekstrak Fitur MFCC & Melakukan Time Warping..."):
                     try:
-                        st.session_state['result'] = clf.predict(test_bytes=audio_bytes)
+                        st.session_state['result'] = clf.predict(test_bytes=audio_bytes, file_name=file_name)
                         st.rerun()
                     except Exception as e:
                         st.error(f"Gagal memproses file: {str(e)}")
@@ -523,9 +579,9 @@ def main():
         if recorded_audio is not None:
             audio_bytes = recorded_audio.read()
             if st.button("🔍 Analisis Hasil Rekaman", use_container_width=True, type="primary"):
-                with st.spinner("Menghitung jarak pola suara (DTW)..."):
+                with st.spinner("Mengekstrak Fitur MFCC & Melakukan Time Warping..."):
                     try:
-                        st.session_state['result'] = clf.predict(test_bytes=audio_bytes)
+                        st.session_state['result'] = clf.predict(test_bytes=audio_bytes, file_name='rekaman.wav')
                         st.rerun()
                     except Exception as e:
                         st.error(f"Gagal memproses rekaman: {str(e)}")
@@ -534,37 +590,37 @@ def main():
         result = st.session_state['result']
 
         st.markdown("---")
-        st.markdown("## 📊 Hasil Analisis")
+        st.markdown("## 📊 Hasil Analisis Algoritma DTW")
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.markdown(f'<div class="metric-card"><div class="metric-value">{result["predicted_class"].replace("Logat_", "").upper()}</div><div class="metric-label">Prediksi Logat Terkuat</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-value">{result["predicted_class"].replace("Logat_", "").upper()}</div><div class="metric-label">Prediksi Logat Utama</div></div>', unsafe_allow_html=True)
         with col2:
-            st.markdown(f'<div class="metric-card"><div class="metric-value">{result["confidence"]*100:.1f}%</div><div class="metric-label">Tingkat Keyakinan (Confidence)</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-value">{result["confidence"]*100:.1f}%</div><div class="metric-label">Skor Confidence</div></div>', unsafe_allow_html=True)
         with col3:
-            st.markdown(f'<div class="metric-card"><div class="metric-value">{result["k_used"]}</div><div class="metric-label">K-Neighbors Digunakan</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-value">{result["k_used"]}</div><div class="metric-label">K-Neighbors Terkalkulasi</div></div>', unsafe_allow_html=True)
 
-        st.markdown("### 📈 Perbandingan Sinyal Audio")
+        st.markdown("### 📈 Visualisasi Jarak Waktu (Time Warping)")
         st.plotly_chart(create_waveform_comparison(result['test_waveform'], result['ref_waveform'], result['ref_class_name']), use_container_width=True)
 
-        st.markdown("### 🎯 Analisis Kedekatan Fitur Suara")
+        st.markdown("### 🎯 Rasio Kedekatan Multi-Kelas")
         col1, col2 = st.columns(2)
         with col1:
             st.plotly_chart(create_confidence_chart(result['ranked_predictions']), use_container_width=True)
         with col2:
             st.plotly_chart(create_radar_chart(result['ranked_predictions']), use_container_width=True)
 
-        st.markdown("### 🔥 Skala Kemiripan Keseluruhan Database")
+        st.markdown("### 🔥 Skala Distribusi ke Seluruh Model Database")
         st.plotly_chart(create_similarity_heatmap(result['all_distances'], clf.class_names), use_container_width=True)
 
-        st.markdown("### 🎵 Spektrogram Suara Anda")
+        st.markdown("### 🎵 Pemetaan Spektrogram Input")
         st.plotly_chart(create_spectrogram_plot(result['test_waveform']), use_container_width=True)
 
         if st.button("🔄 Tutup Analisis", use_container_width=True):
             del st.session_state['result']
             st.rerun()
 
-    st.markdown('<div class="footer"><p>Dialect Classifier | DTW + MFCC | Rumah Data</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="footer"><p>Rumah Data | Dialect Classifier v2.0 | Berbasis DTW + MFCC</p></div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
