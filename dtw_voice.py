@@ -3,279 +3,633 @@ import os
 import zipfile
 import tempfile
 import json
-import time
-import numpy as np
-import librosa
-import librosa.display
-import matplotlib.pyplot as plt
-import seaborn as sns
 from pathlib import Path
 from collections import defaultdict, Counter
+from datetime import datetime
+
+import numpy as np
+import librosa
 from scipy.spatial.distance import cdist
 from sklearn.preprocessing import StandardScaler
-from streamlit_mic_recorder import streamlit_mic_recorder
+import plotly.graph_objects as go
 
-# ==========================================
-# 1. KONFIGURASI HALAMAN & UI
-# ==========================================
+# ============================================================
+# KONFIGURASI HALAMAN
+# ============================================================
+
 st.set_page_config(
-    page_title="AI Dialect Analyzer - Rumah Data",
+    page_title="Dialect Classifier",
     page_icon="🎙️",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
 )
 
-# Custom CSS untuk tampilan profesional
-st.markdown("""
-    <style>
-    .main { background-color: #0e1117; }
-    .stMetric { background-color: #161b22; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #238636; color: white; }
-    .sidebar .sidebar-content { background-image: linear-gradient(#161b22,#0d1117); }
-    h1, h2, h3 { color: #58a6ff !important; }
-    .prediction-card {
-        padding: 20px;
-        border-radius: 15px;
-        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-        border: 1px solid #38444d;
-        text-align: center;
-        margin-bottom: 20px;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+# ============================================================
+# CUSTOM CSS
+# ============================================================
 
-# ==========================================
-# 2. LOGIKA BACKEND (DTW ENGINE)
-# ==========================================
+st.markdown("""
+<style>
+.main-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 2rem;
+    border-radius: 20px;
+    margin-bottom: 2rem;
+    text-align: center;
+}
+.main-header h1 {
+    color: white;
+    font-size: 2.5rem;
+    margin-bottom: 0.5rem;
+}
+.main-header p {
+    color: rgba(255,255,255,0.9);
+    font-size: 1.1rem;
+}
+.metric-card {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    border-radius: 15px;
+    padding: 1rem;
+    text-align: center;
+    border: 1px solid rgba(102, 126, 234, 0.3);
+}
+.metric-value {
+    font-size: 2rem;
+    font-weight: bold;
+    color: #667eea;
+}
+.metric-label {
+    color: #888;
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
+}
+.class-tag {
+    display: inline-block;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 0.3rem 0.8rem;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    margin: 0.2rem;
+}
+.footer {
+    text-align: center;
+    padding: 2rem;
+    color: #666;
+    font-size: 0.8rem;
+    border-top: 1px solid rgba(255,255,255,0.1);
+    margin-top: 3rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ============================================================
+# KONFIGURASI AUDIO
+# ============================================================
 
 class AudioConfig:
-    SAMPLE_RATE = 16000
-    N_MFCC = 13
-    N_MELS = 40
-    HOP_LENGTH = 160
-    WIN_LENGTH = 400
-    N_FFT = 512
-    K_NEIGHBORS = 5
+    SAMPLE_RATE    = 16000
+    N_MFCC         = 13
+    N_MELS         = 40
+    HOP_LENGTH     = 160
+    WIN_LENGTH     = 400
+    N_FFT          = 512
+    DELTA          = True
+    DELTA_DELTA    = True
+    MIN_DURATION   = 0.5
+    K_NEIGHBORS    = 5
+    DTW_WINDOW     = None
+    FIXED_DURATION = 5.0
+
+# ============================================================
+# FEATURE EXTRACTOR
+# ============================================================
 
 class FeatureExtractor:
-    def __init__(self):
-        self.cfg = AudioConfig()
+    def __init__(self, config: AudioConfig = None):
+        self.cfg = config or AudioConfig()
         self.scaler = StandardScaler()
         self._fitted = False
 
-    def process_audio(self, y):
-        # Normalisasi & Pre-processing
-        if np.max(np.abs(y)) > 0:
-            y = y / np.max(np.abs(y))
-        y, _ = librosa.effects.trim(y, top_db=30)
-        
-        # Ekstraksi MFCC + Delta + Delta2
-        mfcc = librosa.feature.mfcc(y=y, sr=self.cfg.SAMPLE_RATE, n_mfcc=self.cfg.N_MFCC)
-        delta = librosa.feature.delta(mfcc)
-        delta2 = librosa.feature.delta(mfcc, order=2)
-        
-        features = np.hstack([mfcc.T, delta.T, delta2.T])
+    def load_from_bytes(self, audio_bytes):
+        try:
+            import io
+            y, _ = librosa.load(io.BytesIO(audio_bytes), sr=self.cfg.SAMPLE_RATE, mono=True)
+            
+            if len(y) / self.cfg.SAMPLE_RATE < self.cfg.MIN_DURATION:
+                return None
+            
+            if np.max(np.abs(y)) > 0:
+                y = y / np.max(np.abs(y))
+            
+            y, _ = librosa.effects.trim(y, top_db=20)
+            
+            if self.cfg.FIXED_DURATION:
+                target_length = int(self.cfg.FIXED_DURATION * self.cfg.SAMPLE_RATE)
+                if len(y) > target_length:
+                    y = y[:target_length]
+                elif len(y) < target_length:
+                    y = np.pad(y, (0, target_length - len(y)))
+            
+            return y
+        except Exception as e:
+            return None
+
+    def extract_mfcc(self, y: np.ndarray) -> np.ndarray:
+        cfg = self.cfg
+        mfcc = librosa.feature.mfcc(
+            y=y, sr=cfg.SAMPLE_RATE, n_mfcc=cfg.N_MFCC,
+            n_mels=cfg.N_MELS, hop_length=cfg.HOP_LENGTH,
+            win_length=cfg.WIN_LENGTH, n_fft=cfg.N_FFT
+        )
+        features = [mfcc.T]
+        if cfg.DELTA:
+            features.append(librosa.feature.delta(mfcc, order=1).T)
+        if cfg.DELTA_DELTA:
+            features.append(librosa.feature.delta(mfcc, order=2).T)
+        return np.hstack(features)
+
+    def extract_from_bytes(self, audio_bytes):
+        y = self.load_from_bytes(audio_bytes)
+        if y is None:
+            return None
+        return self.extract_mfcc(y)
+
+    def fit_scaler(self, all_features: list):
+        stacked = np.vstack(all_features)
+        stacked = np.nan_to_num(stacked, nan=0.0, posinf=0.0, neginf=0.0)
+        self.scaler.fit(stacked)
+        self._fitted = True
+
+    def normalize(self, features: np.ndarray) -> np.ndarray:
+        if self._fitted:
+            result = self.scaler.transform(features)
+            result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+            return result
         return features
 
-def dtw_distance(seq1, seq2):
-    cost = cdist(seq1, seq2, metric='euclidean')
+# ============================================================
+# DTW DISTANCE
+# ============================================================
+
+def dtw_distance(seq1: np.ndarray, seq2: np.ndarray, window: int = None) -> float:
     n, m = len(seq1), len(seq2)
+    
+    if n == 0 or m == 0:
+        return float('inf')
+    
+    cost = cdist(seq1, seq2, metric='euclidean')
+    
+    if np.any(np.isinf(cost)) or np.any(np.isnan(cost)):
+        return float('inf')
+    
     dp = np.full((n + 1, m + 1), np.inf)
     dp[0, 0] = 0.0
-    for i in range(1, n + 1):
-        for j in range(1, m + 1):
-            dp[i, j] = cost[i-1, j-1] + min(dp[i-1, j], dp[i, j-1], dp[i-1, j-1])
-    return float(dp[n, m] / (n + m))
+    
+    if window is None:
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                dp[i, j] = cost[i-1, j-1] + min(dp[i-1,j], dp[i,j-1], dp[i-1,j-1])
+    else:
+        for i in range(1, n + 1):
+            j_min = max(1, i - window)
+            j_max = min(m, i + window)
+            for j in range(j_min, j_max + 1):
+                dp[i, j] = cost[i-1, j-1] + min(dp[i-1,j], dp[i,j-1], dp[i-1,j-1])
+    
+    result = float(dp[n, m] / (n + m))
+    
+    if np.isnan(result) or np.isinf(result):
+        return float('inf')
+    
+    return result
 
-@st.cache_resource
-class DialectModel:
-    def __init__(self):
-        self.cfg = AudioConfig()
-        self.extractor = FeatureExtractor()
+# ============================================================
+# CLASSIFIER
+# ============================================================
+
+class DTWClassifier:
+    def __init__(self, config: AudioConfig = None):
+        self.cfg = config or AudioConfig()
+        self.extractor = FeatureExtractor(self.cfg)
         self.templates = defaultdict(list)
-        self.is_trained = False
+        self.class_names = []
+        self._trained = False
+        self.class_counts = {}
 
-    def train_from_zip(self, zip_path):
-        all_raw = []
+    def load_from_folder(self, folder_path: str):
+        supported = {'.wav', '.mp3', '.m4a', '.ogg', '.flac', '.opus'}
         temp_data = defaultdict(list)
         
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extractall(tmpdir)
-            
-            p = Path(tmpdir)
-            # Menangani struktur zip (folder dalam folder)
-            audio_paths = list(p.rglob('*.wav')) + list(p.rglob('*.mp3'))
-            
-            for ap in audio_paths:
-                cname = ap.parent.name
-                y, _ = librosa.load(str(ap), sr=self.cfg.SAMPLE_RATE)
-                feat = self.extractor.process_audio(y)
-                temp_data[cname].append(feat)
-                all_raw.append(feat)
-
-        # Fit Scaler
-        stacked = np.vstack(all_raw)
-        self.extractor.scaler.fit(stacked)
+        folder = Path(folder_path)
+        
+        if not folder.exists():
+            raise FileNotFoundError(f"Folder {folder_path} tidak ditemukan!")
+        
+        for class_dir in folder.iterdir():
+            if class_dir.is_dir():
+                cname = class_dir.name
+                audio_files = [f for f in class_dir.rglob('*') if f.suffix.lower() in supported]
+                
+                for af in audio_files:
+                    y = self.extractor.load_from_bytes(open(str(af), 'rb').read())
+                    if y is not None:
+                        feat = self.extractor.extract_mfcc(y)
+                        if feat is not None:
+                            temp_data[cname].append(feat)
+                            self.class_counts[cname] = self.class_counts.get(cname, 0) + 1
         
         for cname, feats in temp_data.items():
-            for f in feats:
-                norm_f = self.extractor.scaler.transform(f)
-                self.templates[cname].append(norm_f)
+            self.templates[cname].extend(feats)
         
-        self.is_trained = True
-        return list(temp_data.keys())
+        self.class_names = sorted(self.templates.keys())
+        return self.class_counts
 
-    def predict(self, y):
-        feat = self.extractor.process_audio(y)
-        feat = self.extractor.scaler.transform(feat)
+    def fit_scaler(self):
+        all_features = []
+        for feats in self.templates.values():
+            all_features.extend(feats)
+        
+        if all_features:
+            self.extractor.fit_scaler(all_features)
+            for cname in self.templates:
+                self.templates[cname] = [self.extractor.normalize(f) for f in self.templates[cname]]
+            self._trained = True
+
+    def predict(self, test_bytes: bytes = None):
+        if not self._trained:
+            raise RuntimeError("Belum training!")
+        
+        feat = self.extractor.extract_from_bytes(test_bytes)
+        if feat is None:
+            raise ValueError("Gagal proses audio")
+        
+        feat = self.extractor.normalize(feat)
         
         all_dist = []
-        for cname, tmpls in self.templates.items():
-            for t in tmpls:
-                d = dtw_distance(feat, t)
-                all_dist.append((d, cname))
+        for cname in self.class_names:
+            for idx, tmpl in enumerate(self.templates[cname]):
+                d = dtw_distance(feat, tmpl, window=self.cfg.DTW_WINDOW)
+                if not np.isinf(d):
+                    all_dist.append((d, cname, idx))
+        
+        if not all_dist:
+            raise RuntimeError("Tidak ada distance valid!")
         
         all_dist.sort(key=lambda x: x[0])
-        top_k = all_dist[:self.cfg.K_NEIGHBORS]
+        k = min(self.cfg.K_NEIGHBORS, len(all_dist))
+        top_k = all_dist[:k]
         votes = Counter([x[1] for x in top_k])
         pred = votes.most_common(1)[0][0]
         
-        # Hitung Confidence
-        dists = np.array([x[0] for x in top_k])
-        conf = (1 / (dists + 1e-6))
-        conf_pct = (np.max(conf) / np.sum(conf))
+        class_avg = {}
+        class_min = {}
+        for cn in self.class_names:
+            ds = [d for d, c, _ in all_dist if c == cn]
+            class_avg[cn] = float(np.mean(ds)) if ds else float('inf')
+            class_min[cn] = float(min(ds)) if ds else float('inf')
         
-        return pred, conf_pct, all_dist
+        avg_arr = np.array([class_avg[c] for c in self.class_names])
+        avg_arr = np.where(np.isinf(avg_arr), 1e9, avg_arr)
+        inv = 1.0 / (avg_arr + 1e-9)
+        conf = inv / inv.sum()
+        conf = np.nan_to_num(conf, nan=0.0)
+        
+        if conf.sum() == 0:
+            conf = np.ones(len(self.class_names)) / len(self.class_names)
+        
+        class_conf = {self.class_names[i]: float(conf[i]) for i in range(len(self.class_names))}
+        ranked = sorted(class_conf.items(), key=lambda x: x[1], reverse=True)
+        
+        return {
+            'predicted_class': pred,
+            'confidence': class_conf[pred],
+            'ranked_predictions': ranked,
+            'class_avg_distances': class_avg,
+            'class_min_distances': class_min,
+            'all_distances': all_dist,
+            'k_used': k,
+        }
 
-# ==========================================
-# 3. DASHBOARD UI
-# ==========================================
+# ============================================================
+# VISUALIZATION FUNCTIONS
+# ============================================================
+
+def create_waveform_plot(audio_bytes):
+    import io
+    y, sr = librosa.load(io.BytesIO(audio_bytes), sr=16000)
+    time = np.arange(0, len(y)) / sr
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=time, y=y,
+        mode='lines',
+        name='Waveform',
+        line=dict(color='#667eea', width=1.5),
+        fill='tozeroy',
+        fillcolor='rgba(102, 126, 234, 0.2)'
+    ))
+    
+    fig.update_layout(
+        title=dict(text='Waveform Audio', font=dict(color='white')),
+        xaxis=dict(title='Waktu (detik)', gridcolor='#333', color='white'),
+        yaxis=dict(title='Amplitudo', gridcolor='#333', color='white'),
+        plot_bgcolor='#1e1e2e',
+        paper_bgcolor='#1e1e2e',
+        height=300,
+        margin=dict(l=0, r=0, t=40, b=0)
+    )
+    return fig
+
+def create_spectrogram_plot(audio_bytes):
+    import io
+    y, sr = librosa.load(io.BytesIO(audio_bytes), sr=16000)
+    D = librosa.amplitude_to_db(np.abs(librosa.stft(y)), ref=np.max)
+    
+    fig = go.Figure(data=go.Heatmap(
+        z=D,
+        colorscale='Viridis',
+        colorbar=dict(title='dB')
+    ))
+    
+    fig.update_layout(
+        title=dict(text='Spektrogram', font=dict(color='white')),
+        xaxis=dict(title='Waktu (detik)', gridcolor='#333', color='white'),
+        yaxis=dict(title='Frekuensi (Hz)', gridcolor='#333', color='white'),
+        plot_bgcolor='#1e1e2e',
+        paper_bgcolor='#1e1e2e',
+        height=300,
+        margin=dict(l=0, r=0, t=40, b=0)
+    )
+    return fig
+
+def create_confidence_chart(ranked_predictions):
+    classes = [r[0] for r in ranked_predictions]
+    scores = [r[1] * 100 for r in ranked_predictions]
+    colors = ['#2ecc71' if i == 0 else '#667eea' for i in range(len(classes))]
+    
+    fig = go.Figure(data=[
+        go.Bar(
+            x=scores, y=classes,
+            orientation='h',
+            marker=dict(color=colors, line=dict(color='white', width=0.5)),
+            text=[f'{s:.1f}%' for s in scores],
+            textposition='outside',
+            textfont=dict(color='white')
+        )
+    ])
+    
+    fig.update_layout(
+        title=dict(text='Tingkat Kemiripan per Logat', font=dict(color='white')),
+        xaxis=dict(title='Confidence Score (%)', range=[0, 100], gridcolor='#333', color='white'),
+        yaxis=dict(title='Logat', gridcolor='#333', color='white'),
+        plot_bgcolor='#1e1e2e',
+        paper_bgcolor='#1e1e2e',
+        height=400,
+        margin=dict(l=0, r=0, t=40, b=0)
+    )
+    return fig
+
+def create_gauge_chart(confidence):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=confidence * 100,
+        title={'text': "Confidence Score", 'font': {'color': 'white'}},
+        gauge={
+            'axis': {'range': [0, 100], 'tickcolor': 'white'},
+            'bar': {'color': "#667eea"},
+            'bgcolor': "#1e1e2e",
+            'borderwidth': 0,
+            'steps': [
+                {'range': [0, 33], 'color': '#e74c3c'},
+                {'range': [33, 66], 'color': '#f0c040'},
+                {'range': [66, 100], 'color': '#2ecc71'}
+            ]
+        },
+        number={'font': {'color': 'white', 'size': 50}}
+    ))
+    
+    fig.update_layout(
+        paper_bgcolor='#1e1e2e',
+        height=300,
+        margin=dict(l=0, r=0, t=40, b=0)
+    )
+    return fig
+
+def create_similarity_heatmap(all_distances, class_names):
+    similarities = []
+    labels = []
+    
+    for cname in class_names:
+        class_dists = [d for d, c, _ in all_distances if c == cname]
+        for idx, d in enumerate(class_dists):
+            if d > 0 and not np.isinf(d):
+                sim = min(100, (1.0 / d) * 20)
+            else:
+                sim = 0
+            similarities.append(sim)
+            labels.append(f"{cname}<br>#{idx+1}")
+    
+    if not similarities:
+        fig = go.Figure()
+        fig.add_annotation(text="Tidak ada data", showarrow=False)
+        return fig
+    
+    fig = go.Figure(data=go.Heatmap(
+        z=[similarities],
+        y=['Audio Test'],
+        x=labels,
+        colorscale='Greens',
+        zmin=0, zmax=100,
+        text=[[f'{s:.1f}%' for s in similarities]],
+        texttemplate='%{text}',
+        textfont={"size": 10}
+    ))
+    
+    fig.update_layout(
+        title=dict(text='Heatmap Kemiripan', font=dict(color='white')),
+        xaxis=dict(title='Template', tickangle=45, tickfont=dict(size=10, color='white')),
+        yaxis=dict(title='', tickfont=dict(color='white')),
+        plot_bgcolor='#1e1e2e',
+        paper_bgcolor='#1e1e2e',
+        height=300,
+        margin=dict(l=0, r=0, t=40, b=0)
+    )
+    return fig
+
+# ============================================================
+# MAIN APP
+# ============================================================
 
 def main():
-    st.sidebar.image("https://cdn-icons-png.flaticon.com/512/3003/3003244.png", width=100)
-    st.sidebar.title("Kontrol Panel")
-    st.sidebar.markdown("---")
+    st.markdown("""
+    <div class="main-header">
+        <h1>🎙️ Dialect Classifier</h1>
+        <p>Klasifikasi Logat Suara dengan DTW + MFCC</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Inisialisasi Model
-    model = DialectModel()
+    if 'classifier' not in st.session_state:
+        st.session_state['classifier'] = DTWClassifier(AudioConfig())
+        st.session_state['trained'] = False
+        st.session_state['training_loaded'] = False
     
-    # Load Training Data Otomatis
-    TRAIN_ZIP = "data_training.zip"
-    if os.path.exists(TRAIN_ZIP):
-        with st.spinner("Mengintegrasikan Data Training..."):
-            classes = model.train_from_zip(TRAIN_ZIP)
-        st.sidebar.success(f"Model Siap! {len(classes)} Logat Terdeteksi.")
-    else:
-        st.sidebar.error("File 'data_training.zip' tidak ditemukan!")
-        st.stop()
-
-    # Header Utama
-    st.title("🎙️ AI Dialect & Voice Analysis")
-    st.markdown("Dashboard profesional untuk klasifikasi logat daerah berbasis **Dynamic Time Warping (DTW)**.")
+    clf = st.session_state['classifier']
     
-    # Layout Kolom Input
-    col1, col2 = st.columns([1, 1])
-    
-    audio_to_analyze = None
-    
-    with col1:
-        st.subheader("📤 Input Suara")
-        tab1, tab2 = st.tabs(["Upload File", "Rekam Langsung"])
+    # SIDEBAR
+    with st.sidebar:
+        st.markdown("### 📁 Training Data")
         
-        with tab1:
-            uploaded_file = st.file_uploader("Pilih file audio (WAV/MP3)", type=["wav", "mp3"])
-            if uploaded_file:
-                audio_to_analyze, _ = librosa.load(uploaded_file, sr=16000)
-                st.audio(uploaded_file)
+        TRAINING_FOLDER = "training_data"
         
-        with tab2:
-            st.write("Klik ikon mic untuk mulai merekam:")
-            audio_rec = streamlit_mic_recorder(
-                start_prompt="Mulai Rekam 🎤",
-                stop_prompt="Berhenti & Simpan ⏹️",
-                key='recorder'
-            )
-            if audio_rec:
-                audio_to_analyze = librosa.util.buf_to_float(audio_rec['bytes'], n_bytes=2)
-                st.audio(audio_rec['bytes'])
-
-    # Logika Analisis
-    if audio_to_analyze is not None:
-        with col2:
-            st.subheader("📊 Hasil Analisis")
-            with st.spinner("Menganalisis karakteristik suara..."):
-                start_time = time.time()
-                pred, conf, all_dist = model.predict(audio_to_analyze)
-                duration = time.time() - start_time
+        if not st.session_state['training_loaded']:
+            if st.button("📂 Load Training Data", use_container_width=True):
+                with st.spinner("Loading..."):
+                    try:
+                        class_counts = clf.load_from_folder(TRAINING_FOLDER)
+                        st.session_state['training_loaded'] = True
+                        st.success(f"✅ Loaded {len(class_counts)} classes!")
+                        for cname, count in class_counts.items():
+                            st.markdown(f"- {cname}: {count} samples")
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+        
+        if st.session_state['training_loaded'] and not st.session_state['trained']:
+            if st.button("🚀 Train Model", use_container_width=True):
+                with st.spinner("Training..."):
+                    clf.fit_scaler()
+                    st.session_state['trained'] = True
+                    st.success("✅ Model siap!")
+                    st.rerun()
+        
+        if st.session_state['trained']:
+            st.markdown("---")
+            st.markdown("### ✅ Model Status")
+            for cname in clf.class_names:
+                count = clf.class_counts.get(cname, 0)
+                st.markdown(f"- {cname}: {count} samples")
             
-            # Tampilan Card Prediksi
-            st.markdown(f"""
-                <div class="prediction-card">
-                    <p style="color: #8b949e; margin-bottom: 0;">Logat Terdeteksi</p>
-                    <h1 style="margin: 0; font-size: 3em;">{pred.upper()}</h1>
-                    <p style="color: #3fb950; font-weight: bold; font-size: 1.2em;">
-                        Confidence: {conf*100:.1f}%
-                    </p>
-                </div>
-            """, unsafe_allow_html=True)
-            
-            st.caption(f"Waktu komputasi: {duration:.2f} detik")
-
-        # --- VISUALISASI ---
+            if st.button("🔄 Reset", use_container_width=True):
+                st.session_state['classifier'] = DTWClassifier(AudioConfig())
+                st.session_state['trained'] = False
+                st.session_state['training_loaded'] = False
+                st.rerun()
+        
         st.markdown("---")
-        st.subheader("📈 Visualisasi Kedalaman Data")
-        
-        v_col1, v_col2 = st.columns(2)
-        
-        with v_col1:
-            # Waveform & Spectrogram
-            fig, ax = plt.subplots(2, 1, figsize=(10, 6))
-            fig.patch.set_facecolor('#0e1117')
-            
-            # Waveform
-            librosa.display.waveshow(audio_to_analyze, sr=16000, ax=ax[0], color='#58a6ff')
-            ax[0].set_title("Audio Waveform", color='white')
-            ax[0].set_facecolor('#161b22')
-            
-            # Mel-Spectrogram
-            S = librosa.feature.melspectrogram(y=audio_to_analyze, sr=16000, n_mels=128)
-            S_db = librosa.power_to_db(S, ref=np.max)
-            img = librosa.display.specshow(S_db, x_axis='time', y_axis='mel', sr=16000, ax=ax[1])
-            ax[1].set_title("Mel-Spectrogram", color='white')
-            plt.colorbar(img, ax=ax[1], format='%+2.0f dB')
-            
-            plt.tight_layout()
-            st.pyplot(fig)
+        st.markdown("### ⚙️ Settings")
+        k_neighbors = st.slider("K-Neighbors", 1, 10, 5)
+        if st.button("Apply", use_container_width=True):
+            clf.cfg.K_NEIGHBORS = k_neighbors
+            if st.session_state['trained']:
+                clf.fit_scaler()
+            st.success("Applied!")
+    
+    # MAIN CONTENT
+    if not st.session_state['trained']:
+        st.info("👈 Klik 'Load Training Data' lalu 'Train Model'")
+        st.info("""
+        **Struktur folder:**
+        """)
+        return
 
-        with v_col2:
-            # Bar Chart Jarak
-            st.write("**Perbandingan Jarak DTW per Kelas**")
-            # Ambil rata-rata jarak per kelas untuk grafik
-            dist_summary = defaultdict(list)
-            for d, c in all_dist:
-                dist_summary[c].append(d)
-            
-            avg_dists = {k: np.mean(v) for k, v in dist_summary.items()}
-            sorted_avg = dict(sorted(avg_dists.items(), key=lambda item: item[1]))
-            
-            fig_bar, ax_bar = plt.subplots(figsize=(10, 6))
-            fig_bar.patch.set_facecolor('#0e1117')
-            ax_bar.set_facecolor('#161b22')
-            
-            colors = sns.color_palette("viridis", len(sorted_avg))
-            sns.barplot(x=list(sorted_avg.values()), y=list(sorted_avg.keys()), palette=colors, ax=ax_bar)
-            
-            ax_bar.set_xlabel("Jarak DTW (Semakin Kecil Semakin Mirip)", color='white')
-            ax_bar.tick_params(colors='white')
-            st.pyplot(fig_bar)
+            tab1, tab2 = st.tabs(["📁 Upload Audio", "ℹ️ Info"])
 
-        # Tabel Ranking
-        with st.expander("Lihat Detail Ranking Logat"):
-            st.table([{"Logat": k, "Rata-rata Jarak": f"{v:.4f}"} for k, v in sorted_avg.items()])
+        with tab1:
+            uploaded_file = st.file_uploader(
+                    "Pilih file audio",
+                    type=['wav', 'mp3', 'm4a', 'ogg', 'flac']
+                    )
 
-    else:
-        st.info("Silakan upload file atau gunakan fitur rekam suara untuk memulai analisis.")
+        if uploaded_file is not None:
+            audio_bytes = uploaded_file.read()
+            st.audio(audio_bytes, format="audio/wav")
+    
+        if st.button("🔍 Analisis", use_container_width=True, type="primary"):
+            with st.spinner("Menganalisis..."):
+                try:
+                    result = clf.predict(test_bytes=audio_bytes)
+                    st.session_state['result'] = result
+                    st.session_state['audio_bytes'] = audio_bytes
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+
+        with tab2:
+            st.markdown("""
+            **Dialect Classifier** menggunakan:
+            - **MFCC** untuk ekstraksi fitur
+            - **DTW** untuk pengukuran kemiripan
+            - **k-NN** untuk klasifikasi
+
+            **Training Data:** Batak, Jawa, Melayu, Papua, Sunda
+            """)
+
+# HASIL
+if 'result' in st.session_state:
+result = st.session_state['result']
+audio_bytes = st.session_state.get('audio_bytes')
+
+st.markdown("---")
+st.markdown("## 📊 Hasil Klasifikasi")
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-value">{result['predicted_class']}</div>
+        <div class="metric-label">Prediksi Logat</div>
+    </div>
+    """, unsafe_allow_html=True)
+with col2:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-value">{result['confidence']*100:.1f}%</div>
+        <div class="metric-label">Confidence</div>
+    </div>
+    """, unsafe_allow_html=True)
+with col3:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-value">{result['k_used']}</div>
+        <div class="metric-label">K-Neighbors</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Visualisasi
+col1, col2 = st.columns(2)
+with col1:
+    st.plotly_chart(create_waveform_plot(audio_bytes), use_container_width=True)
+with col2:
+    st.plotly_chart(create_spectrogram_plot(audio_bytes), use_container_width=True)
+
+col1, col2 = st.columns(2)
+with col1:
+    st.plotly_chart(create_confidence_chart(result['ranked_predictions']), use_container_width=True)
+with col2:
+    st.plotly_chart(create_gauge_chart(result['confidence']), use_container_width=True)
+
+st.plotly_chart(create_similarity_heatmap(result['all_distances'], clf.class_names), use_container_width=True)
+
+# Export
+export_data = {
+    'timestamp': datetime.now().isoformat(),
+    'predicted_dialect': result['predicted_class'],
+    'confidence_pct': result['confidence'] * 100,
+    'rankings': [{'dialect': cls, 'confidence_pct': sc * 100} 
+                for cls, sc in result['ranked_predictions']]
+}
+
+st.download_button(
+    label="📥 Download JSON",
+    data=json.dumps(export_data, indent=2),
+    file_name=f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+    mime="application/json"
+)
+
+if st.button("🔄 Analisis Baru"):
+    del st.session_state['result']
+    st.rerun()
+
+st.markdown('<div class="footer"><p>Dialect Classifier | DTW + MFCC</p></div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
-    main()
+main()
