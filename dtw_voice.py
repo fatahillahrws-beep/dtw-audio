@@ -531,105 +531,105 @@ def main():
         """)
         return
 
-            tab1, tab2 = st.tabs(["📁 Upload Audio", "ℹ️ Info"])
+    tab1, tab2 = st.tabs(["📁 Upload Audio", "ℹ️ Info"])
 
-        with tab1:
-            uploaded_file = st.file_uploader(
-                    "Pilih file audio",
-                    type=['wav', 'mp3', 'm4a', 'ogg', 'flac']
-                    )
+    with tab1:
+        uploaded_file = st.file_uploader(
+                "Pilih file audio",
+                type=['wav', 'mp3', 'm4a', 'ogg', 'flac']
+                )
 
         if uploaded_file is not None:
             audio_bytes = uploaded_file.read()
             st.audio(audio_bytes, format="audio/wav")
     
-        if st.button("🔍 Analisis", use_container_width=True, type="primary"):
-            with st.spinner("Menganalisis..."):
-                try:
-                    result = clf.predict(test_bytes=audio_bytes)
-                    st.session_state['result'] = result
-                    st.session_state['audio_bytes'] = audio_bytes
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
+            if st.button("🔍 Analisis", use_container_width=True, type="primary"):
+                with st.spinner("Menganalisis..."):
+                    try:
+                        result = clf.predict(test_bytes=audio_bytes)
+                        st.session_state['result'] = result
+                        st.session_state['audio_bytes'] = audio_bytes
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
 
-        with tab2:
-            st.markdown("""
-            **Dialect Classifier** menggunakan:
-            - **MFCC** untuk ekstraksi fitur
-            - **DTW** untuk pengukuran kemiripan
-            - **k-NN** untuk klasifikasi
+    with tab2:
+        st.markdown("""
+        **Dialect Classifier** menggunakan:
+        - **MFCC** untuk ekstraksi fitur
+        - **DTW** untuk pengukuran kemiripan
+        - **k-NN** untuk klasifikasi
 
-            **Training Data:** Batak, Jawa, Melayu, Papua, Sunda
-            """)
+        **Training Data:** Batak, Jawa, Melayu, Papua, Sunda
+        """)
 
-# HASIL
-if 'result' in st.session_state:
-result = st.session_state['result']
-audio_bytes = st.session_state.get('audio_bytes')
+    # HASIL
+    if 'result' in st.session_state:
+        result = st.session_state['result']
+        audio_bytes = st.session_state.get('audio_bytes')
 
-st.markdown("---")
-st.markdown("## 📊 Hasil Klasifikasi")
+        st.markdown("---")
+        st.markdown("## 📊 Hasil Klasifikasi")
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-value">{result['predicted_class']}</div>
-        <div class="metric-label">Prediksi Logat</div>
-    </div>
-    """, unsafe_allow_html=True)
-with col2:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-value">{result['confidence']*100:.1f}%</div>
-        <div class="metric-label">Confidence</div>
-    </div>
-    """, unsafe_allow_html=True)
-with col3:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-value">{result['k_used']}</div>
-        <div class="metric-label">K-Neighbors</div>
-    </div>
-    """, unsafe_allow_html=True)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value">{result['predicted_class']}</div>
+                <div class="metric-label">Prediksi Logat</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col2:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value">{result['confidence']*100:.1f}%</div>
+                <div class="metric-label">Confidence</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with col3:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value">{result['k_used']}</div>
+                <div class="metric-label">K-Neighbors</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-# Visualisasi
-col1, col2 = st.columns(2)
-with col1:
-    st.plotly_chart(create_waveform_plot(audio_bytes), use_container_width=True)
-with col2:
-    st.plotly_chart(create_spectrogram_plot(audio_bytes), use_container_width=True)
+        # Visualisasi
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(create_waveform_plot(audio_bytes), use_container_width=True)
+        with col2:
+            st.plotly_chart(create_spectrogram_plot(audio_bytes), use_container_width=True)
 
-col1, col2 = st.columns(2)
-with col1:
-    st.plotly_chart(create_confidence_chart(result['ranked_predictions']), use_container_width=True)
-with col2:
-    st.plotly_chart(create_gauge_chart(result['confidence']), use_container_width=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(create_confidence_chart(result['ranked_predictions']), use_container_width=True)
+        with col2:
+            st.plotly_chart(create_gauge_chart(result['confidence']), use_container_width=True)
 
-st.plotly_chart(create_similarity_heatmap(result['all_distances'], clf.class_names), use_container_width=True)
+        st.plotly_chart(create_similarity_heatmap(result['all_distances'], clf.class_names), use_container_width=True)
 
-# Export
-export_data = {
-    'timestamp': datetime.now().isoformat(),
-    'predicted_dialect': result['predicted_class'],
-    'confidence_pct': result['confidence'] * 100,
-    'rankings': [{'dialect': cls, 'confidence_pct': sc * 100} 
-                for cls, sc in result['ranked_predictions']]
-}
+        # Export
+        export_data = {
+            'timestamp': datetime.now().isoformat(),
+            'predicted_dialect': result['predicted_class'],
+            'confidence_pct': result['confidence'] * 100,
+            'rankings': [{'dialect': cls, 'confidence_pct': sc * 100} 
+                        for cls, sc in result['ranked_predictions']]
+        }
 
-st.download_button(
-    label="📥 Download JSON",
-    data=json.dumps(export_data, indent=2),
-    file_name=f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-    mime="application/json"
-)
+        st.download_button(
+            label="📥 Download JSON",
+            data=json.dumps(export_data, indent=2),
+            file_name=f"result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json"
+        )
 
-if st.button("🔄 Analisis Baru"):
-    del st.session_state['result']
-    st.rerun()
+        if st.button("🔄 Analisis Baru"):
+            del st.session_state['result']
+            st.rerun()
 
-st.markdown('<div class="footer"><p>Dialect Classifier | DTW + MFCC</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="footer"><p>Dialect Classifier | DTW + MFCC</p></div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
-main()
+    main()
