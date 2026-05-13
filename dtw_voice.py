@@ -11,56 +11,60 @@ from datetime import datetime
 import numpy as np
 import librosa
 import soundfile as sf
+import audioread
+
 from scipy.spatial.distance import cdist
 from sklearn.preprocessing import StandardScaler
+
 import plotly.graph_objects as go
 
 # ============================================================
-# KONFIGURASI HALAMAN
+# PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
-    page_title="Dialect Classifier - Rumah Data",
+    page_title="Dialect Classifier",
     page_icon="🎙️",
     layout="wide"
 )
 
 # ============================================================
-# CUSTOM CSS
+# CSS
 # ============================================================
 
 st.markdown("""
 <style>
-.main-header {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    padding: 2rem;
-    border-radius: 20px;
-    margin-bottom: 2rem;
-    text-align: center;
+
+.main-header{
+    background: linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+    padding:2rem;
+    border-radius:20px;
+    text-align:center;
+    margin-bottom:2rem;
 }
 
-.main-header h1 {
-    color: white;
-    font-size: 2.5rem;
+.main-header h1{
+    color:white;
+    font-size:2.7rem;
 }
 
-.metric-card {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-    border-radius: 15px;
-    padding: 1rem;
-    text-align: center;
+.metric-card{
+    background:#1e1e2e;
+    border-radius:15px;
+    padding:1rem;
+    text-align:center;
 }
 
-.metric-value {
-    font-size: 2rem;
-    font-weight: bold;
-    color: #667eea;
+.metric-value{
+    font-size:2rem;
+    font-weight:bold;
+    color:#667eea;
 }
 
-.metric-label {
-    color: #ccc;
-    margin-top: 0.5rem;
+.metric-label{
+    color:#ccc;
 }
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -69,21 +73,30 @@ st.markdown("""
 # ============================================================
 
 class AudioConfig:
+
     SAMPLE_RATE = 16000
+
     N_MFCC = 13
+
     N_MELS = 40
+
     HOP_LENGTH = 160
+
     WIN_LENGTH = 400
+
     N_FFT = 512
+
     DELTA = True
+
     DELTA_DELTA = True
 
-    # dibuat lebih toleran
     MIN_DURATION = 0.05
 
-    K_NEIGHBORS = 5
-    DTW_WINDOW = None
     FIXED_DURATION = 5.0
+
+    K_NEIGHBORS = 5
+
+    DTW_WINDOW = None
 
 # ============================================================
 # FEATURE EXTRACTOR
@@ -92,8 +105,11 @@ class AudioConfig:
 class FeatureExtractor:
 
     def __init__(self, config=None):
+
         self.cfg = config or AudioConfig()
+
         self.scaler = StandardScaler()
+
         self._fitted = False
 
     # ========================================================
@@ -113,33 +129,38 @@ class FeatureExtractor:
                 return None
 
             y = None
-            sr = self.cfg.SAMPLE_RATE
 
             # ====================================================
-            # COBA LIBROSA
+            # LIBROSA
             # ====================================================
 
             try:
+
                 y, sr = librosa.load(
                     filepath,
                     sr=self.cfg.SAMPLE_RATE,
-                    mono=True
+                    mono=True,
+                    res_type='kaiser_fast'
                 )
+
             except Exception:
-                pass
+                y = None
 
             # ====================================================
-            # FALLBACK SOUND FILE
+            # SOUND FILE
             # ====================================================
 
             if y is None:
+
                 try:
+
                     y, sr = sf.read(filepath)
 
                     if len(y.shape) > 1:
                         y = np.mean(y, axis=1)
 
                     if sr != self.cfg.SAMPLE_RATE:
+
                         y = librosa.resample(
                             y,
                             orig_sr=sr,
@@ -147,21 +168,78 @@ class FeatureExtractor:
                         )
 
                 except Exception:
+                    y = None
+
+            # ====================================================
+            # AUDIOREAD + FFMPEG
+            # ====================================================
+
+            if y is None:
+
+                try:
+
+                    samples = []
+
+                    with audioread.audio_open(filepath) as f:
+
+                        sr = f.samplerate
+
+                        for buf in f:
+
+                            data = np.frombuffer(
+                                buf,
+                                dtype=np.int16
+                            )
+
+                            samples.append(data)
+
+                    if samples:
+
+                        y = np.concatenate(samples)
+
+                        y = y.astype(np.float32) / 32768.0
+
+                        if sr != self.cfg.SAMPLE_RATE:
+
+                            y = librosa.resample(
+                                y,
+                                orig_sr=sr,
+                                target_sr=self.cfg.SAMPLE_RATE
+                            )
+
+                except Exception as e:
+
+                    print(f"GAGAL AUDIOREAD: {filepath}")
+
+                    print(e)
+
                     return None
+
+            # ====================================================
+            # VALIDASI
+            # ====================================================
+
+            if y is None:
+                return None
 
             y = np.asarray(y, dtype=np.float32)
 
             y = np.nan_to_num(y)
 
+            if len(y) == 0:
+                return None
+
             # ====================================================
-            # TRIM SILENCE LEBIH TOLERAN
+            # TRIM SILENCE
             # ====================================================
 
             try:
+
                 y, _ = librosa.effects.trim(
                     y,
-                    top_db=40
+                    top_db=45
                 )
+
             except Exception:
                 pass
 
@@ -191,9 +269,11 @@ class FeatureExtractor:
                 )
 
                 if len(y) > target_length:
+
                     y = y[:target_length]
 
                 else:
+
                     y = np.pad(
                         y,
                         (0, target_length - len(y)),
@@ -203,8 +283,11 @@ class FeatureExtractor:
             return y
 
         except Exception as e:
-            print(f"GAGAL LOAD AUDIO: {filepath}")
+
+            print(f"ERROR LOAD AUDIO: {filepath}")
+
             print(e)
+
             return None
 
     # ========================================================
@@ -230,6 +313,7 @@ class FeatureExtractor:
             features = [mfcc.T]
 
             if cfg.DELTA:
+
                 features.append(
                     librosa.feature.delta(
                         mfcc,
@@ -238,6 +322,7 @@ class FeatureExtractor:
                 )
 
             if cfg.DELTA_DELTA:
+
                 features.append(
                     librosa.feature.delta(
                         mfcc,
@@ -252,10 +337,11 @@ class FeatureExtractor:
             return result
 
         except Exception:
+
             return None
 
     # ========================================================
-    # BYTES
+    # EXTRACT FROM BYTES
     # ========================================================
 
     def extract_from_bytes(self, audio_bytes):
@@ -266,12 +352,15 @@ class FeatureExtractor:
         ) as tmp:
 
             tmp.write(audio_bytes)
+
             tmp_path = tmp.name
 
         try:
+
             y = self.load_from_path(tmp_path)
 
         finally:
+
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
@@ -281,7 +370,7 @@ class FeatureExtractor:
         return self.extract_mfcc(y)
 
     # ========================================================
-    # NORMALIZE
+    # NORMALIZATION
     # ========================================================
 
     def fit_scaler(self, all_features):
@@ -326,9 +415,12 @@ def dtw_distance(seq1, seq2, window=None):
     for i in range(1, n + 1):
 
         if window is None:
+
             j_start = 1
             j_end = m + 1
+
         else:
+
             j_start = max(1, i - window)
             j_end = min(m + 1, i + window)
 
@@ -363,14 +455,14 @@ class DTWClassifier:
 
         self.class_names = []
 
-        self._trained = False
-
         self.class_counts = {}
 
         self.failed_files = []
 
+        self._trained = False
+
     # ========================================================
-    # VALIDASI ZIP
+    # VALIDATE ZIP
     # ========================================================
 
     def is_zip_valid(self, zip_path):
@@ -378,11 +470,13 @@ class DTWClassifier:
         try:
 
             with zipfile.ZipFile(zip_path, 'r') as zf:
+
                 bad = zf.testzip()
 
             return bad is None
 
         except Exception:
+
             return False
 
     # ========================================================
@@ -406,14 +500,14 @@ class DTWClassifier:
 
         zip_files = []
 
-        # ====================================================
-        # CARI ZIP RECURSIVE
-        # ====================================================
-
         for ext in ['*.zip', '*.ZIP']:
-            zip_files.extend(current_dir.rglob(ext))
+
+            zip_files.extend(
+                current_dir.rglob(ext)
+            )
 
         if not zip_files:
+
             return False, "ZIP tidak ditemukan"
 
         total_audio = 0
@@ -423,14 +517,17 @@ class DTWClassifier:
             cname = zip_file.stem.strip()
 
             cname = cname.replace(' ', '_')
+
             cname = cname.replace('-', '_')
 
             print("=" * 50)
+
             print(f"MEMBACA ZIP: {zip_file.name}")
 
             if not self.is_zip_valid(zip_file):
 
                 print("ZIP RUSAK")
+
                 continue
 
             try:
@@ -438,6 +535,7 @@ class DTWClassifier:
                 with tempfile.TemporaryDirectory() as tmpdir:
 
                     with zipfile.ZipFile(zip_file, 'r') as zf:
+
                         zf.extractall(tmpdir)
 
                     tmppath = Path(tmpdir)
@@ -473,25 +571,40 @@ class DTWClassifier:
 
                         try:
 
-                            y = self.extractor.load_from_path(str(af))
+                            y = self.extractor.load_from_path(
+                                str(af)
+                            )
 
                             if y is None:
-                                self.failed_files.append(str(af))
+
+                                self.failed_files.append(
+                                    str(af)
+                                )
+
                                 continue
 
                             feat = self.extractor.extract_mfcc(y)
 
                             if feat is None:
-                                self.failed_files.append(str(af))
+
+                                self.failed_files.append(
+                                    str(af)
+                                )
+
                                 continue
 
                             if np.isnan(feat).any():
-                                self.failed_files.append(str(af))
+
+                                self.failed_files.append(
+                                    str(af)
+                                )
+
                                 continue
 
                             temp_data[cname].append(feat)
 
                             success_count += 1
+
                             total_audio += 1
 
                         except Exception as e:
@@ -504,9 +617,7 @@ class DTWClassifier:
 
                     print(f"BERHASIL: {success_count}")
 
-            except Exception as e:
-
-                print(f"GAGAL ZIP: {zip_file}")
+            except Exception:
 
                 traceback.print_exc()
 
@@ -515,6 +626,7 @@ class DTWClassifier:
         # ====================================================
 
         for cname, feats in temp_data.items():
+
             self.templates[cname].extend(feats)
 
         self.class_names = sorted(
@@ -524,9 +636,11 @@ class DTWClassifier:
         all_features = []
 
         for feats in self.templates.values():
+
             all_features.extend(feats)
 
         if not all_features:
+
             return False, "Tidak ada fitur valid"
 
         self.extractor.fit_scaler(all_features)
@@ -534,7 +648,9 @@ class DTWClassifier:
         for cname in self.templates:
 
             self.templates[cname] = [
+
                 self.extractor.normalize(f)
+
                 for f in self.templates[cname]
             ]
 
@@ -549,16 +665,18 @@ class DTWClassifier:
     # PREDICT
     # ========================================================
 
-    def predict(self, test_bytes=None):
+    def predict(self, audio_bytes):
 
         if not self._trained:
-            raise RuntimeError("Belum training")
+
+            raise RuntimeError("Model belum training")
 
         feat = self.extractor.extract_from_bytes(
-            test_bytes
+            audio_bytes
         )
 
         if feat is None:
+
             raise ValueError(
                 "Audio gagal diproses"
             )
@@ -580,13 +698,15 @@ class DTWClassifier:
                 )
 
                 if not np.isinf(d):
+
                     all_dist.append(
                         (d, cname, idx)
                     )
 
         if not all_dist:
+
             raise RuntimeError(
-                "Distance kosong"
+                "Tidak ada distance valid"
             )
 
         all_dist.sort(key=lambda x: x[0])
@@ -602,17 +722,22 @@ class DTWClassifier:
             ]
 
             if ds:
+
                 class_avg[cn] = float(
                     np.mean(
                         ds[:self.cfg.K_NEIGHBORS]
                     )
                 )
+
             else:
+
                 class_avg[cn] = float('inf')
 
         avg_arr = np.array(
-            [class_avg[c]
-             for c in self.class_names]
+            [
+                class_avg[c]
+                for c in self.class_names
+            ]
         )
 
         avg_arr = np.where(
@@ -626,7 +751,9 @@ class DTWClassifier:
         conf = inv / inv.sum()
 
         class_conf = {
+
             self.class_names[i]: float(conf[i])
+
             for i in range(len(self.class_names))
         }
 
@@ -642,20 +769,22 @@ class DTWClassifier:
         )
 
         return {
+
             'predicted_class': pred,
+
             'confidence': class_conf[pred],
-            'ranked_predictions': ranked,
-            'all_distances': all_dist
+
+            'ranked_predictions': ranked
         }
 
 # ============================================================
-# VISUAL
+# VISUALIZATION
 # ============================================================
 
 def create_confidence_chart(ranked_predictions):
 
     classes = [
-        r[0].replace('Logat_', '')
+        r[0]
         for r in ranked_predictions
     ]
 
@@ -667,11 +796,15 @@ def create_confidence_chart(ranked_predictions):
     fig = go.Figure()
 
     fig.add_trace(
+
         go.Bar(
             x=scores,
             y=classes,
             orientation='h',
-            text=[f"{s:.1f}%" for s in scores],
+            text=[
+                f"{s:.1f}%"
+                for s in scores
+            ],
             textposition='outside'
         )
     )
@@ -703,7 +836,7 @@ def initialize_model():
     return classifier, success, message
 
 # ============================================================
-# MAIN
+# MAIN APP
 # ============================================================
 
 def main():
@@ -711,7 +844,7 @@ def main():
     st.markdown("""
     <div class="main-header">
         <h1>🎙️ Dialect Classifier</h1>
-        <p>DTW + MFCC</p>
+        <p>DTW + MFCC + Multi Audio Loader</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -729,7 +862,7 @@ def main():
 
             st.success(msg)
 
-            st.markdown("### Total Data")
+            st.markdown("### Total Audio")
 
             for cname in clf.class_names:
 
@@ -747,19 +880,21 @@ def main():
             st.markdown("### DEBUG")
 
             st.write(
-                f"Total file gagal: {len(clf.failed_files)}"
+                f"Total gagal: {len(clf.failed_files)}"
             )
 
             if clf.failed_files:
 
                 with st.expander(
-                    "Lihat file gagal"
+                    "Lihat File Gagal"
                 ):
 
                     for item in clf.failed_files[:100]:
+
                         st.text(item)
 
         else:
+
             st.error(msg)
 
         st.markdown("---")
@@ -801,7 +936,7 @@ def main():
         ]
     )
 
-    if uploaded_file:
+    if uploaded_file is not None:
 
         audio_bytes = uploaded_file.read()
 
@@ -813,7 +948,7 @@ def main():
         ):
 
             with st.spinner(
-                "Menghitung DTW..."
+                "Menghitung..."
             ):
 
                 try:
@@ -876,18 +1011,21 @@ def main():
         )
 
         export_data = {
+
             'timestamp': datetime.now().isoformat(),
+
             'prediction': result['predicted_class'],
+
             'confidence': result['confidence']
         }
 
         st.download_button(
-            label="Download JSON",
+            label="📥 Download JSON",
             data=json.dumps(
                 export_data,
                 indent=2
             ),
-            file_name="hasil.json",
+            file_name="hasil_klasifikasi.json",
             mime="application/json"
         )
 
@@ -896,4 +1034,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
