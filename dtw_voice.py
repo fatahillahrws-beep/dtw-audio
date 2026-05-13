@@ -669,183 +669,182 @@ def main():
         st.info("👈 Klik 'Load Training Data' di sidebar, lalu 'Train Model'")
         st.info("""
         **Struktur folder:**
-""")
-return
-
-tab1, tab2 = st.tabs(["🎤 Rekam Suara", "📁 Upload Audio"])
-
-audio_bytes = None
-
-with tab1:
-st.markdown("### Rekam Suara Langsung")
-
-if MIC_AVAILABLE:
-    audio = mic_recorder(
-        start_prompt="🎙️ Mulai Rekam",
-        stop_prompt="⏹️ Berhenti",
-        just_once=True,
-        use_container_width=True,
-        format="wav"
-    )
-    
-    if audio:
-        audio_bytes = audio['bytes']
-        st.audio(audio_bytes, format="audio/wav")
+        """)
+        return
         
-        if st.button("🔍 Analisis Rekaman", use_container_width=True, type="primary"):
-            with st.spinner("Menganalisis..."):
-                try:
-                    result = clf.predict(test_bytes=audio_bytes)
-                    st.session_state['result'] = result
-                    st.session_state['audio_bytes'] = audio_bytes
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-else:
-    st.warning("Fitur rekam suara tidak tersedia. Gunakan tab Upload Audio.")
-
-with tab2:
-st.markdown("### Upload File Audio")
-
-uploaded_file = st.file_uploader(
-    "Pilih file audio",
-    type=['wav', 'mp3', 'm4a', 'ogg', 'flac']
-)
-
-if uploaded_file is not None:
-    audio_bytes = uploaded_file.read()
-    st.audio(audio_bytes, format="audio/wav")
-    
-    if st.button("🔍 Analisis Audio", use_container_width=True, type="primary"):
-        with st.spinner("Menganalisis..."):
-            try:
-                result = clf.predict(test_bytes=audio_bytes)
-                st.session_state['result'] = result
-                st.session_state['audio_bytes'] = audio_bytes
+        tab1, tab2 = st.tabs(["🎤 Rekam Suara", "📁 Upload Audio"])
+        
+        audio_bytes = None
+        
+        with tab1:
+        st.markdown("### Rekam Suara Langsung")
+        
+        if MIC_AVAILABLE:
+            audio = mic_recorder(
+                start_prompt="🎙️ Mulai Rekam",
+                stop_prompt="⏹️ Berhenti",
+                just_once=True,
+                use_container_width=True,
+                format="wav"
+            )
+            
+            if audio:
+                audio_bytes = audio['bytes']
+                st.audio(audio_bytes, format="audio/wav")
+                
+                if st.button("🔍 Analisis Rekaman", use_container_width=True, type="primary"):
+                    with st.spinner("Menganalisis..."):
+                        try:
+                            result = clf.predict(test_bytes=audio_bytes)
+                            st.session_state['result'] = result
+                            st.session_state['audio_bytes'] = audio_bytes
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {str(e)}")
+        else:
+            st.warning("Fitur rekam suara tidak tersedia. Gunakan tab Upload Audio.")
+        
+        with tab2:
+        st.markdown("### Upload File Audio")
+        
+        uploaded_file = st.file_uploader(
+            "Pilih file audio",
+            type=['wav', 'mp3', 'm4a', 'ogg', 'flac']
+        )
+        
+        if uploaded_file is not None:
+            audio_bytes = uploaded_file.read()
+            st.audio(audio_bytes, format="audio/wav")
+            
+            if st.button("🔍 Analisis Audio", use_container_width=True, type="primary"):
+                with st.spinner("Menganalisis..."):
+                    try:
+                        result = clf.predict(test_bytes=audio_bytes)
+                        st.session_state['result'] = result
+                        st.session_state['audio_bytes'] = audio_bytes
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+        
+        # Tampilkan hasil
+        if 'result' in st.session_state:
+        result = st.session_state['result']
+        audio_bytes = st.session_state.get('audio_bytes', None)
+        
+        st.markdown("---")
+        st.markdown("## 📊 Hasil Klasifikasi")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value">{result['predicted_class']}</div>
+                <div class="metric-label">Prediksi Logat</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value">{result['confidence']*100:.1f}%</div>
+                <div class="metric-label">Confidence</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value">{result['k_used']}</div>
+                <div class="metric-label">K-Neighbors</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with col4:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-value">DTW+MFCC</div>
+                <div class="metric-label">Metode</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Visualizations
+        st.markdown("### 🎵 Visualisasi Audio")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            waveform_fig = create_waveform_plot(audio_bytes)
+            st.plotly_chart(waveform_fig, use_container_width=True)
+        
+        with col2:
+            spectrogram_fig = create_spectrogram_plot(audio_bytes)
+            st.plotly_chart(spectrogram_fig, use_container_width=True)
+        
+        st.markdown("### 📈 Hasil Prediksi")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            confidence_fig = create_confidence_chart(result['ranked_predictions'])
+            st.plotly_chart(confidence_fig, use_container_width=True)
+        
+        with col2:
+            gauge_fig = create_gauge_chart(result['confidence'])
+            st.plotly_chart(gauge_fig, use_container_width=True)
+        
+        st.markdown("### 📉 Analisis Jarak DTW")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            distance_fig = create_distance_chart(
+                result['class_avg_distances'],
+                result['class_min_distances'],
+                result['predicted_class']
+            )
+            st.plotly_chart(distance_fig, use_container_width=True)
+        
+        with col2:
+            heatmap_fig = create_similarity_heatmap(
+                result['all_distances'],
+                clf.class_names
+            )
+            st.plotly_chart(heatmap_fig, use_container_width=True)
+        
+        # Export
+        st.markdown("### 💾 Export Hasil")
+        
+        export_data = {
+            'timestamp': datetime.now().isoformat(),
+            'predicted_dialect': result['predicted_class'],
+            'confidence_pct': result['confidence'] * 100,
+            'k_neighbors': result['k_used'],
+            'rankings': [{'dialect': cls, 'confidence_pct': sc * 100} 
+                        for cls, sc in result['ranked_predictions']]
+        }
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button(
+                label="📥 Download JSON",
+                data=json.dumps(export_data, indent=2, ensure_ascii=False),
+                file_name=f"classification_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json",
+                use_container_width=True
+            )
+        
+        with col2:
+            if st.button("🔄 Analisis Baru", use_container_width=True):
+                del st.session_state['result']
+                if 'audio_bytes' in st.session_state:
+                    del st.session_state['audio_bytes']
                 st.rerun()
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-
-# Tampilkan hasil
-if 'result' in st.session_state:
-result = st.session_state['result']
-audio_bytes = st.session_state.get('audio_bytes', None)
-
-st.markdown("---")
-st.markdown("## 📊 Hasil Klasifikasi")
-
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-value">{result['predicted_class']}</div>
-        <div class="metric-label">Prediksi Logat</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col2:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-value">{result['confidence']*100:.1f}%</div>
-        <div class="metric-label">Confidence</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col3:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-value">{result['k_used']}</div>
-        <div class="metric-label">K-Neighbors</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with col4:
-    st.markdown(f"""
-    <div class="metric-card">
-        <div class="metric-value">DTW+MFCC</div>
-        <div class="metric-label">Metode</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# Visualizations
-st.markdown("### 🎵 Visualisasi Audio")
-col1, col2 = st.columns(2)
-
-with col1:
-    waveform_fig = create_waveform_plot(audio_bytes)
-    st.plotly_chart(waveform_fig, use_container_width=True)
-
-with col2:
-    spectrogram_fig = create_spectrogram_plot(audio_bytes)
-    st.plotly_chart(spectrogram_fig, use_container_width=True)
-
-st.markdown("### 📈 Hasil Prediksi")
-col1, col2 = st.columns(2)
-
-with col1:
-    confidence_fig = create_confidence_chart(result['ranked_predictions'])
-    st.plotly_chart(confidence_fig, use_container_width=True)
-
-with col2:
-    gauge_fig = create_gauge_chart(result['confidence'])
-    st.plotly_chart(gauge_fig, use_container_width=True)
-
-st.markdown("### 📉 Analisis Jarak DTW")
-col1, col2 = st.columns(2)
-
-with col1:
-    distance_fig = create_distance_chart(
-        result['class_avg_distances'],
-        result['class_min_distances'],
-        result['predicted_class']
-    )
-    st.plotly_chart(distance_fig, use_container_width=True)
-
-with col2:
-    heatmap_fig = create_similarity_heatmap(
-        result['all_distances'],
-        clf.class_names
-    )
-    st.plotly_chart(heatmap_fig, use_container_width=True)
-
-# Export
-st.markdown("### 💾 Export Hasil")
-
-export_data = {
-    'timestamp': datetime.now().isoformat(),
-    'predicted_dialect': result['predicted_class'],
-    'confidence_pct': result['confidence'] * 100,
-    'k_neighbors': result['k_used'],
-    'rankings': [{'dialect': cls, 'confidence_pct': sc * 100} 
-                for cls, sc in result['ranked_predictions']]
-}
-
-col1, col2 = st.columns(2)
-with col1:
-    st.download_button(
-        label="📥 Download JSON",
-        data=json.dumps(export_data, indent=2, ensure_ascii=False),
-        file_name=f"classification_result_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-        mime="application/json",
-        use_container_width=True
-    )
-
-with col2:
-    if st.button("🔄 Analisis Baru", use_container_width=True):
-        del st.session_state['result']
-        if 'audio_bytes' in st.session_state:
-            del st.session_state['audio_bytes']
-        st.rerun()
-
-# Footer
-st.markdown("""
-<div class="footer">
-<p>Dialect Classifier | DTW + MFCC | k-NN Classification</p>
-<p>© 2024</p>
-</div>
-""", unsafe_allow_html=True)
-
-if __name__ == "__main__":
-main()
         
+        # Footer
+        st.markdown("""
+        <div class="footer">
+        <p>Dialect Classifier | DTW + MFCC | k-NN Classification</p>
+        <p>© 2024</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        if __name__ == "__main__":
+        main()
