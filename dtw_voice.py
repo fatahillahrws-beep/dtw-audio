@@ -18,7 +18,7 @@ import plotly.graph_objects as go
 # ============================================================
 
 st.set_page_config(
-    page_title="Dialect Classifier",
+    page_title="Dialect Classifier - Rumah Data",
     page_icon="🎙️",
     layout="wide"
 )
@@ -61,15 +61,6 @@ st.markdown("""
     color: #888;
     font-size: 0.9rem;
     margin-top: 0.5rem;
-}
-.class-tag {
-    display: inline-block;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
-    padding: 0.3rem 0.8rem;
-    border-radius: 20px;
-    font-size: 0.8rem;
-    margin: 0.2rem;
 }
 .footer {
     text-align: center;
@@ -217,40 +208,43 @@ class DTWClassifier:
         self.class_counts = {}
 
     def auto_load_and_train(self):
-        """Otomatis mencari file Logat_*.zip di folder yang sama dengan script dan melatih model"""
+        """Otomatis mencari semua file .zip di folder yang sama dengan script"""
         supported = {'.wav', '.mp3', '.m4a', '.ogg', '.flac', '.opus'}
         temp_data = defaultdict(list)
         
-        # Mencari file ZIP yang mengandung kata "Logat_" di direktori saat ini
+        # Mencari SEMUA file ZIP di direktori saat ini
         current_dir = Path('.')
-        zip_files = list(current_dir.glob('*Logat_*.zip'))
+        zip_files = list(current_dir.glob('*.zip'))
         
         if not zip_files:
-            return False, "Tidak ditemukan file ZIP training (misal: Logat_Batak.zip) di folder ini."
+            return False, "Tidak ditemukan file .zip di folder ini."
         
         for zip_file in zip_files:
-            cname = zip_file.stem # Mengambil nama file tanpa .zip (contoh: Logat_Batak)
+            cname = zip_file.stem # Mengambil nama file tanpa .zip
             
-            with tempfile.TemporaryDirectory() as tmpdir:
-                with zipfile.ZipFile(zip_file, 'r') as zf:
-                    zf.extractall(tmpdir)
-                
-                tmppath = Path(tmpdir)
-                audio_files = [f for f in tmppath.rglob('*') if f.suffix.lower() in supported]
-                
-                for af in audio_files:
-                    try:
-                        with open(str(af), 'rb') as f:
-                            audio_bytes = f.read()
-                            
-                        y = self.extractor.load_from_bytes(audio_bytes)
-                        if y is not None:
-                            feat = self.extractor.extract_mfcc(y)
-                            if feat is not None:
-                                temp_data[cname].append(feat)
-                                self.class_counts[cname] = self.class_counts.get(cname, 0) + 1
-                    except Exception as e:
-                        pass
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    with zipfile.ZipFile(zip_file, 'r') as zf:
+                        zf.extractall(tmpdir)
+                    
+                    tmppath = Path(tmpdir)
+                    audio_files = [f for f in tmppath.rglob('*') if f.suffix.lower() in supported]
+                    
+                    for af in audio_files:
+                        try:
+                            with open(str(af), 'rb') as f:
+                                audio_bytes = f.read()
+                                
+                            y = self.extractor.load_from_bytes(audio_bytes)
+                            if y is not None:
+                                feat = self.extractor.extract_mfcc(y)
+                                if feat is not None:
+                                    temp_data[cname].append(feat)
+                                    self.class_counts[cname] = self.class_counts.get(cname, 0) + 1
+                        except Exception:
+                            pass
+            except Exception:
+                pass # Abaikan file zip jika korup
         
         # Menggabungkan fitur
         for cname, feats in temp_data.items():
@@ -270,7 +264,7 @@ class DTWClassifier:
             self._trained = True
             return True, f"Berhasil memuat dan melatih {len(self.class_names)} logat."
         else:
-            return False, "Data fitur gagal diekstrak dari audio."
+            return False, "Data fitur gagal diekstrak dari audio. Pastikan file ZIP berisi audio yang valid."
 
     def predict(self, test_bytes: bytes = None):
         if not self._trained:
@@ -512,8 +506,16 @@ def main():
             st.info("Pastikan file seperti `Logat_Batak.zip`, `Logat_Jawa.zip`, dll berada pada folder yang sama dengan script ini.")
             
         st.markdown("---")
-        st.markdown("### ⚙️ Pengaturan")
-        # Jika nilai K diubah, kita update modelnya
+        st.markdown("### 🛠️ Pengelolaan Data")
+        st.caption("Jika Anda baru saja menambahkan file ZIP baru, klik tombol di bawah ini agar sistem membacanya.")
+        if st.button("🔄 Muat Ulang Semua ZIP (Refresh)", use_container_width=True):
+            st.cache_resource.clear() # Membersihkan cache agar ZIP baru terbaca
+            if 'result' in st.session_state:
+                del st.session_state['result']
+            st.rerun()
+
+        st.markdown("---")
+        st.markdown("### ⚙️ Pengaturan Parameter")
         new_k = st.slider("K-Neighbors", 1, 10, clf.cfg.K_NEIGHBORS)
         if new_k != clf.cfg.K_NEIGHBORS:
             clf.cfg.K_NEIGHBORS = new_k
@@ -524,11 +526,13 @@ def main():
         st.warning("⚠️ Aplikasi belum bisa digunakan karena file ZIP data training tidak ditemukan.")
         return
 
-    tab1, tab2 = st.tabs(["📁 Upload Audio", "ℹ️ Informasi"])
+    # Menambahkan Tiga Tab (Upload, Rekam, Informasi)
+    tab1, tab2, tab3 = st.tabs(["📁 Upload Audio", "🎤 Rekam Suara", "ℹ️ Informasi"])
 
     with tab1:
+        st.markdown("### 📂 Unggah File Suara")
         uploaded_file = st.file_uploader(
-            "Pilih file audio yang ingin dianalisis (Logat misterius)",
+            "Pilih file audio yang ingin dianalisis (Format: WAV, MP3, M4A, OGG)",
             type=['wav', 'mp3', 'm4a', 'ogg', 'flac']
         )
 
@@ -536,7 +540,7 @@ def main():
             audio_bytes = uploaded_file.read()
             st.audio(audio_bytes, format="audio/wav")
     
-            if st.button("🔍 Mulai Analisis", use_container_width=True, type="primary"):
+            if st.button("🔍 Mulai Analisis dari File", use_container_width=True, type="primary"):
                 with st.spinner("Sedang mengkalkulasi kemiripan (DTW)..."):
                     try:
                         result = clf.predict(test_bytes=audio_bytes)
@@ -547,12 +551,32 @@ def main():
                         st.error(f"Terjadi kesalahan saat memproses: {str(e)}")
 
     with tab2:
+        st.markdown("### 🎤 Rekam Suara Anda Langsung")
+        st.info("Fitur ini membutuhkan izin penggunaan mikrofon di browser Anda.")
+        
+        # Menggunakan fitur native audio_input dari Streamlit
+        recorded_audio = st.audio_input("Klik tombol mic di bawah ini untuk mulai merekam suara Anda:")
+        
+        if recorded_audio is not None:
+            audio_bytes = recorded_audio.read()
+            
+            if st.button("🔍 Mulai Analisis Rekaman", use_container_width=True, type="primary"):
+                with st.spinner("Sedang mengkalkulasi kemiripan (DTW)..."):
+                    try:
+                        result = clf.predict(test_bytes=audio_bytes)
+                        st.session_state['result'] = result
+                        st.session_state['audio_bytes'] = audio_bytes
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Terjadi kesalahan saat memproses: {str(e)}")
+
+    with tab3:
         st.markdown("""
         **Cara Kerja Aplikasi:**
-        - Sistem secara **otomatis** membaca dan mengekstrak file ZIP logat (misal: `Logat_Batak.zip`) yang ada di folder yang sama dengan script saat aplikasi berjalan.
+        - Sistem membaca **semua file ZIP logat** (misal: `Logat_Batak.zip`, `Logat_Jawa.zip`) yang diletakkan pada folder yang sama dengan script ini.
+        - **Cache**: Streamlit mengingat data lama agar cepat dimuat. Jika Anda menambah file ZIP baru, klik tombol **"🔄 Muat Ulang Semua ZIP (Refresh)"** di panel sebelah kiri.
         - Fitur suara diekstrak menggunakan **MFCC (Mel-Frequency Cepstral Coefficients)** dan kombinasinya (Delta & Delta-Delta).
-        - Metode **DTW (Dynamic Time Warping)** digunakan untuk mengukur kemiripan fitur waktu dari suara uji terhadap semua template suara latih.
-        - Keputusan akhir diambil menggunakan algoritma k-NN.
+        - Metode **DTW (Dynamic Time Warping)** digunakan untuk mengukur kemiripan fitur waktu dari suara uji.
         """)
 
     # HASIL PREDIKSI DAN VISUALISASI
@@ -622,7 +646,7 @@ def main():
             mime="application/json"
         )
 
-        if st.button("🔄 Analisis File Lain"):
+        if st.button("🔄 Tutup Analisis"):
             del st.session_state['result']
             st.rerun()
 
