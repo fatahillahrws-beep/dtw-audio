@@ -420,7 +420,7 @@ def apply_professional_styles():
 apply_professional_styles()
 
 # ==============================================================================
-# IMPROVED ACOUSTIC CORE
+# ACOUSTIC CORE
 # ==============================================================================
 class AcousticCore:
     def __init__(self, k, w):
@@ -442,7 +442,7 @@ class AcousticCore:
             return y
 
     def extract_features(self, y):
-        """Ekstraksi fitur MFCC dengan normalisasi"""
+        """Ekstraksi fitur MFCC"""
         # Trim silent parts
         yt, _ = librosa.effects.trim(y, top_db=25)
         
@@ -465,25 +465,9 @@ class AcousticCore:
         
         return features, yt
 
-def calculate_similarity(f1, f2):
-    """Menghitung kemiripan antara dua matriks fitur menggunakan mean cosine similarity"""
-    # Pastikan dimensi sama dengan memotong ke panjang minimum
-    min_len = min(len(f1), len(f2))
-    f1_trim = f1[:min_len]
-    f2_trim = f2[:min_len]
-    
-    # Hitung cosine similarity per frame
-    dot_product = np.sum(f1_trim * f2_trim, axis=1)
-    norm1 = np.linalg.norm(f1_trim, axis=1)
-    norm2 = np.linalg.norm(f2_trim, axis=1)
-    
-    # Cosine similarity per frame (hindari division by zero)
-    cos_sim = dot_product / (norm1 * norm2 + 1e-8)
-    
-    # Rata-rata similarity (nilai antara -1 sampai 1, clamp ke 0-1)
-    mean_sim = np.mean(np.clip(cos_sim, 0, 1))
-    
-    return mean_sim
+    def get_centroid(self, features):
+        """Mendapatkan centroid (rata-rata) dari fitur"""
+        return np.mean(features, axis=0)
 
 # ==============================================================================
 # VISUALIZATION ENGINE
@@ -587,7 +571,7 @@ def start_dialect_analysis():
         st.markdown("""
             <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid rgba(56,189,248,0.1);">
                 <div style="font-family:'DM Mono',monospace;font-size:0.58rem;color:#4a6b9b;letter-spacing:1.5px;text-align:center;">
-                    MFCC-20 + COSINE SIMILARITY
+                    CENTROID + COSINE SIMILARITY
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -599,10 +583,10 @@ def start_dialect_analysis():
             <h1 class="hero-title">
                 Laboratorium <span>Pengenalan</span><br>Dialek
             </h1>
-            <div class="hero-subtitle">MFCC-20 · Cosine Similarity · Frame-based Matching</div>
+            <div class="hero-subtitle">Centroid-based · Cosine Similarity · MFCC-20</div>
             <div class="hero-badges">
                 <span class="hero-badge">Cosine Similarity</span>
-                <span class="hero-badge">MFCC-20</span>
+                <span class="hero-badge">Centroid Method</span>
                 <span class="hero-badge">Universal Decoder</span>
                 <span class="hero-badge">Multi-Dialek</span>
             </div>
@@ -614,9 +598,15 @@ def start_dialect_analysis():
 
     @st.cache_resource
     def boot_database():
-        db_templates, db_waves = defaultdict(list), defaultdict(list)
+        db_centroids = {}
+        db_waves = {}
+        db_centroids_per_file = defaultdict(list)  # Untuk visualisasi waveform terbaik
+        
         for z in zip_files:
             label = z.stem.replace("Logat_", "").upper()
+            all_centroids = []
+            waves = []
+            
             with tempfile.TemporaryDirectory() as td:
                 with zipfile.ZipFile(z, 'r') as zf:
                     zf.extractall(td)
@@ -626,13 +616,21 @@ def start_dialect_analysis():
                         if y is not None and len(y) > 0:
                             feats, yt = core.extract_features(y)
                             if feats is not None and len(feats) > 0:
-                                db_templates[label].append(feats)
-                                db_waves[label].append(yt)
-        return db_templates, db_waves
+                                centroid = core.get_centroid(feats)
+                                all_centroids.append(centroid)
+                                waves.append(yt)
+                                db_centroids_per_file[label].append(centroid)
+            
+            if all_centroids:
+                # Rata-rata semua centroid untuk label ini
+                db_centroids[label] = np.mean(all_centroids, axis=0)
+                db_waves[label] = waves
+        
+        return db_centroids, db_waves, db_centroids_per_file
 
-    db_templates, db_waves = boot_database()
+    db_centroids, db_waves, db_centroids_per_file = boot_database()
 
-    if not db_templates:
+    if not db_centroids:
         st.error("Dataset akustik tidak ditemukan. Harap sediakan arsip .zip di direktori kerja.")
         return
 
@@ -687,28 +685,40 @@ def start_dialect_analysis():
                 st.error("Gagal mengekstrak fitur dari audio.")
                 return
 
-            # Klasifikasi dengan Cosine Similarity
-            similarities = []
+            # Hitung centroid input
+            centroid_in = core.get_centroid(feats_in)
             
-            for label, templates in db_templates.items():
-                best_sim = 0
-                best_idx = 0
-                
-                for idx, t in enumerate(templates):
-                    sim = calculate_similarity(feats_in, t)
-                    
-                    if sim > best_sim:
-                        best_sim = sim
-                        best_idx = idx
-                
-                similarities.append((best_sim, label, best_idx))
+            # Hitung cosine similarity dengan setiap centroid label
+            similarities = []
+            for label, centroid_label in db_centroids.items():
+                # Cosine similarity antara dua vektor
+                dot = np.dot(centroid_in, centroid_label)
+                norm_in = np.linalg.norm(centroid_in)
+                norm_label = np.linalg.norm(centroid_label)
+                cos_sim = dot / (norm_in * norm_label + 1e-8)
+                # Clamp ke range 0-1
+                cos_sim = max(0, min(1, cos_sim))
+                similarities.append((cos_sim, label))
             
             # Urutkan dari similarity tertinggi
             similarities.sort(key=lambda x: x[0], reverse=True)
             
             winner = similarities[0][1]
             confidence = similarities[0][0] * 100
-            best_match_idx = similarities[0][2]
+            
+            # Cari template terbaik untuk visualisasi waveform
+            best_match_idx = 0
+            best_match_sim = -1
+            if winner in db_centroids_per_file:
+                for idx, centroid_file in enumerate(db_centroids_per_file[winner]):
+                    dot = np.dot(centroid_in, centroid_file)
+                    norm_in = np.linalg.norm(centroid_in)
+                    norm_file = np.linalg.norm(centroid_file)
+                    sim = dot / (norm_in * norm_file + 1e-8)
+                    sim = max(0, min(1, sim))
+                    if sim > best_match_sim:
+                        best_match_sim = sim
+                        best_match_idx = idx
             
             # MFCC untuk visualisasi
             mfcc_in = librosa.feature.mfcc(y=y_in_t, sr=16000, n_mfcc=13)
@@ -735,9 +745,9 @@ def start_dialect_analysis():
                     <div class="metric-sub">Cosine Similarity</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-label">Mesin VAD</div>
-                    <div class="metric-value green">AKTIF</div>
-                    <div class="metric-sub">Aktivitas Suara Terdeteksi</div>
+                    <div class="metric-label">Metode</div>
+                    <div class="metric-value green">CENTROID</div>
+                    <div class="metric-sub">MFCC-20 + Delta + Delta2</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -772,7 +782,7 @@ def start_dialect_analysis():
         
         h_vals = []
         h_lbls = []
-        for sim, label, _ in similarities:
+        for sim, label in similarities:
             h_vals.append(sim * 100)
             h_lbls.append(label)
         
@@ -798,8 +808,8 @@ def start_dialect_analysis():
 
         with col_l:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-            u_labs = [lbl for _, lbl, _ in similarities]
-            v_radar = [sim * 100 for sim, _, _ in similarities]
+            u_labs = [lbl for _, lbl in similarities]
+            v_radar = [sim * 100 for sim, _ in similarities]
             st.plotly_chart(viz.plot_radar(u_labs, v_radar), use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown(f"""
@@ -861,7 +871,7 @@ def start_dialect_analysis():
             </div>
         """, unsafe_allow_html=True)
 
-        for rank_idx, (sim, name, _) in enumerate(similarities):
+        for rank_idx, (sim, name) in enumerate(similarities):
             similarity_pct = sim * 100
             is_top = rank_idx == 0
             bar_class = "rank-bar-fill top" if is_top else "rank-bar-fill"
