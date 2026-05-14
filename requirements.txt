@@ -7,3 +7,4 @@ plotly
 pydub
 imageio-ffmpeg
 fastdtw
+joblib
