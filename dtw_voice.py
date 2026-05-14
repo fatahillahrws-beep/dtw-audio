@@ -13,7 +13,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.spatial.distance import cdist
 from sklearn.preprocessing import StandardScaler
-from scipy.stats import kurtosis, skew
 
 st.set_page_config(
     page_title="Analisis Akustik Dialek",
@@ -39,7 +38,7 @@ def initialize_universal_engine():
 initialize_universal_engine()
 
 # ==============================================================================
-# NAVY UI/UX ENGINE (DIKEMBALIKAN SEPERTI ASLI)
+# NAVY UI/UX ENGINE
 # ==============================================================================
 def apply_professional_styles():
     st.markdown("""
@@ -85,7 +84,6 @@ def apply_professional_styles():
             );
         }
 
-        /* Hero */
         .hero-header {
             position: relative;
             background: linear-gradient(160deg, var(--navy-700) 0%, var(--navy-800) 60%, var(--navy-900) 100%);
@@ -143,7 +141,6 @@ def apply_professional_styles():
             border-radius: 4px; letter-spacing: 1px; text-transform: uppercase;
         }
 
-        /* Section Headers */
         .section-header {
             display: flex; align-items: center; gap: 14px;
             margin: 2.5rem 0 1.2rem;
@@ -166,7 +163,6 @@ def apply_professional_styles():
             background: linear-gradient(90deg, var(--border) 0%, transparent 100%);
         }
 
-        /* Metric Cards — font clamp agar tidak overflow */
         .metrics-row { display: flex; gap: 16px; margin: 1.5rem 0 2rem; }
         .metric-card {
             flex: 1;
@@ -210,7 +206,6 @@ def apply_professional_styles():
             margin-top: 8px;
         }
 
-        /* Analysis Box — tanpa icon */
         .analysis-box {
             background: linear-gradient(135deg, rgba(7,18,40,0.9) 0%, rgba(4,13,30,0.95) 100%);
             padding: 1.5rem 1.8rem;
@@ -234,7 +229,6 @@ def apply_professional_styles():
         }
         .analysis-text b { color: var(--accent-sky); font-weight: 600; }
 
-        /* Sidebar */
         section[data-testid="stSidebar"] {
             background: var(--navy-800) !important;
             border-right: 1px solid var(--border) !important;
@@ -306,7 +300,6 @@ def apply_professional_styles():
             margin: 1.2rem 0 0.5rem; padding-left: 2px;
         }
 
-        /* Tabs — tanpa emoji */
         .stTabs [data-baseweb="tab-list"] {
             gap: 6px; background: transparent !important;
             border-bottom: 1px solid var(--border) !important;
@@ -334,7 +327,6 @@ def apply_professional_styles():
             border-bottom: 2px solid var(--accent-sky) !important;
         }
 
-        /* Upload Zone */
         .upload-zone {
             background: var(--accent-sky-dim);
             border: 2px dashed var(--border-strong);
@@ -351,7 +343,6 @@ def apply_professional_styles():
             margin-top: 6px; letter-spacing: 1px;
         }
 
-        /* Ranking */
         .rank-item {
             display: flex; align-items: center; gap: 14px;
             padding: 0.8rem 1rem; margin-bottom: 8px;
@@ -388,7 +379,6 @@ def apply_professional_styles():
         }
         .rank-pct.top { color: var(--accent-cyan); }
 
-        /* Chart Container */
         .chart-container {
             background: linear-gradient(135deg, var(--navy-700) 0%, var(--navy-800) 100%);
             border-radius: 16px; border: 1px solid var(--border);
@@ -396,7 +386,6 @@ def apply_professional_styles():
             overflow: hidden;
         }
 
-        /* Buttons */
         .stButton > button {
             background: linear-gradient(135deg, var(--navy-500), var(--navy-600)) !important;
             border: 1px solid var(--border-strong) !important;
@@ -414,7 +403,6 @@ def apply_professional_styles():
             box-shadow: 0 4px 20px rgba(56,189,248,0.2) !important;
         }
 
-        /* Footer */
         .app-footer {
             text-align: center; padding: 2rem 0 1rem;
             border-top: 1px solid var(--border); margin-top: 3rem;
@@ -432,12 +420,12 @@ def apply_professional_styles():
 apply_professional_styles()
 
 # ==============================================================================
-# IMPROVED ACOUSTIC PROCESSING CORE (DIPERBAIKI UNTUK AKURASI)
+# FIXED ACOUSTIC PROCESSING CORE (DENGAN DIMENSI KONSISTEN)
 # ==============================================================================
 class AcousticCore:
     def __init__(self, k, w):
         self.SR = 16000
-        self.N_MFCC = 26  # DITINGKATKAN DARI 13 KE 26
+        self.N_MFCC = 26  # Ditingkatkan dari 13 ke 26
         self.K = k
         self.W = w
 
@@ -454,84 +442,36 @@ class AcousticCore:
             return y
 
     def extract_dialect_features(self, y):
-        """Ekstraksi fitur yang lebih diskriminatif untuk identifikasi dialek"""
+        """Ekstraksi fitur MFCC + Delta + Delta2 saja (konsisten dimensi)"""
         yt, _ = librosa.effects.trim(y, top_db=25)
         
-        # Normalisasi amplitude untuk konsistensi
+        # Normalisasi amplitude
         if np.max(np.abs(yt)) > 0:
             yt = yt / np.max(np.abs(yt))
         
-        # MFCC dengan koefisien lebih banyak (26)
+        # MFCC dengan 26 koefisien
         mfcc = librosa.feature.mfcc(y=yt, sr=self.SR, n_mfcc=self.N_MFCC)
         d1 = librosa.feature.delta(mfcc)
         d2 = librosa.feature.delta(mfcc, order=2)
         
-        # === FITUR TAMBAHAN UNTUK MEMBEDAKAN DIALEK ===
+        # Stack MFCC + Delta + Delta2 (total 78 fitur per frame)
+        features = np.vstack([mfcc, d1, d2]).T
         
-        # 1. Pitch / F0 (penting untuk dialek bernada seperti Sunda)
-        try:
-            f0, _, _ = librosa.pyin(yt, fmin=65, fmax=350, sr=self.SR)
-            f0 = np.nan_to_num(f0)
-            f0_resized = np.resize(f0, (1, mfcc.shape[1]))
-        except:
-            f0_resized = np.zeros((1, mfcc.shape[1]))
-        
-        # 2. Spectral features
-        centroid = librosa.feature.spectral_centroid(y=yt, sr=self.SR)
-        centroid = np.resize(centroid, (1, mfcc.shape[1]))
-        
-        bandwidth = librosa.feature.spectral_bandwidth(y=yt, sr=self.SR)
-        bandwidth = np.resize(bandwidth, (1, mfcc.shape[1]))
-        
-        rolloff = librosa.feature.spectral_rolloff(y=yt, sr=self.SR)
-        rolloff = np.resize(rolloff, (1, mfcc.shape[1]))
-        
-        # 3. Chroma (karakteristik nada)
-        chroma = librosa.feature.chroma_stft(y=yt, sr=self.SR)
-        chroma = np.resize(chroma, (12, mfcc.shape[1]))
-        
-        # 4. Zero Crossing Rate (ritme)
-        zcr = librosa.feature.zero_crossing_rate(yt)
-        zcr = np.resize(zcr, (1, mfcc.shape[1]))
-        
-        # 5. RMS Energy (tekanan suku kata)
-        rms = librosa.feature.rms(y=yt)
-        rms = np.resize(rms, (1, mfcc.shape[1]))
-        
-        # 6. Spectral Contrast
-        try:
-            contrast = librosa.feature.spectral_contrast(y=yt, sr=self.SR, n_bands=6)
-            contrast = np.resize(contrast, (6, mfcc.shape[1]))
-        except:
-            contrast = np.zeros((6, mfcc.shape[1]))
-        
-        # Stack semua fitur (Total: 26+26+26+1+1+1+1+12+1+1+6 = 102 fitur)
-        features = np.vstack([mfcc, d1, d2, f0_resized, centroid, bandwidth, rolloff, chroma, zcr, rms, contrast]).T
-        
-        # Normalisasi per-speaker (z-score)
+        # Normalisasi z-score
         mu = np.mean(features, axis=0)
         sigma = np.std(features, axis=0) + 1e-8
         features_norm = (features - mu) / sigma
         
         return features_norm, mfcc, yt
 
-def improved_dtw_alignment(s1, s2, w_const):
-    """DTW dengan weighted distance (cosine + euclidean)"""
+def dtw_alignment(s1, s2, w_const):
+    """DTW dengan cosine distance"""
     n, m = len(s1), len(s2)
     w = max(w_const, abs(n - m))
     dp = np.full((n + 1, m + 1), np.inf)
     dp[0, 0] = 0.0
     
-    # Multi-metric distance
-    cost_cosine = cdist(s1, s2, metric='cosine')
-    cost_euclidean = cdist(s1, s2, metric='euclidean')
-    
-    # Normalisasi euclidean
-    max_euc = np.max(cost_euclidean) + 1e-8
-    cost_euclidean_norm = cost_euclidean / max_euc
-    
-    # Weighted combination (cosine lebih penting untuk arah vektor)
-    cost = 0.7 * cost_cosine + 0.3 * cost_euclidean_norm
+    cost = cdist(s1, s2, metric='cosine')
     
     for i in range(1, n + 1):
         for j in range(max(1, i-w), min(m, i+w)+1):
@@ -541,7 +481,7 @@ def improved_dtw_alignment(s1, s2, w_const):
     return dp[n, m] / (n + m)
 
 # ==============================================================================
-# VISUALIZATION ENGINE (TIDAK DIUBAH)
+# VISUALIZATION ENGINE
 # ==============================================================================
 class VizEngine:
     @staticmethod
@@ -608,12 +548,12 @@ class VizEngine:
         return fig
 
 # ==============================================================================
-# MAIN PIPELINE (DIUBAH DI BAGIAN CLASSIFIER)
+# MAIN PIPELINE
 # ==============================================================================
 def start_dialect_analysis():
     zip_files = list(Path('.').glob('*.zip'))
 
-    # ── Sidebar ──
+    # Sidebar
     with st.sidebar:
         st.markdown("""
             <div class="sidebar-brand">
@@ -642,12 +582,12 @@ def start_dialect_analysis():
         st.markdown("""
             <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid rgba(56,189,248,0.1);">
                 <div style="font-family:'DM Mono',monospace;font-size:0.58rem;color:#4a6b9b;letter-spacing:1.5px;text-align:center;">
-                    DTW + MFCC-26 + PITCH ENGINE
+                    DTW + MFCC-26 ENGINE
                 </div>
             </div>
         """, unsafe_allow_html=True)
 
-    # ── Hero Header ──
+    # Hero Header
     st.markdown("""
         <div class="hero-header">
             <div class="hero-eyebrow">Sistem Analisis Akustik</div>
@@ -673,7 +613,7 @@ def start_dialect_analysis():
         for z in zip_files:
             label = z.stem.replace("Logat_", "").upper()
             with tempfile.TemporaryDirectory() as td:
-                with zipfile.ZipFile(z, 'r') as zf: 
+                with zipfile.ZipFile(z, 'r') as zf:
                     zf.extractall(td)
                 for f in Path(td).rglob('*'):
                     if f.suffix.lower() in ['.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg']:
@@ -691,7 +631,7 @@ def start_dialect_analysis():
         st.error("Dataset akustik tidak ditemukan. Harap sediakan arsip .zip di direktori kerja.")
         return
 
-    # ── Input ──
+    # Input
     st.markdown("""
         <div class="section-header">
             <span class="section-number">INPUT</span>
@@ -721,9 +661,9 @@ def start_dialect_analysis():
         if m:
             audio_stream, source_id = m.read(), "rekaman_langsung.wav"
 
-    # ── Pipeline ──
+    # Pipeline
     if audio_stream:
-        with st.spinner("Memproses dekomposisi spektral (MFCC-26 + Pitch)..."):
+        with st.spinner("Memproses dekomposisi spektral (MFCC-26)..."):
             with tempfile.NamedTemporaryFile(suffix=Path(source_id).suffix, delete=False) as tmp:
                 tmp.write(audio_stream)
                 path = tmp.name
@@ -742,23 +682,21 @@ def start_dialect_analysis():
                 st.error("Gagal mengekstrak fitur dari audio.")
                 return
 
-            # === PERBAIKAN: CLASSIFIER DENGAN ENSEMBLE ===
+            # Klasifikasi dengan DTW
             scores = []
             for label, templates in db_templates.items():
                 best_score = float('inf')
                 for t in templates:
-                    # DTW dengan improved distance
-                    dist = improved_dtw_alignment(feats_in, t, w_val)
-                    
-                    # Tambahkan global feature comparison untuk stabilitas
-                    mean_in = np.mean(feats_in, axis=0)
-                    mean_t = np.mean(t, axis=0)
-                    cos_sim = np.dot(mean_in, mean_t) / (np.linalg.norm(mean_in) * np.linalg.norm(mean_t) + 1e-8)
-                    cos_dist = 1 - cos_sim
-                    
-                    # Kombinasi DTW dan cosine similarity
-                    combined = 0.6 * dist + 0.4 * cos_dist
-                    best_score = min(best_score, combined)
+                    # Pastikan dimensi sama
+                    if feats_in.shape[1] != t.shape[1]:
+                        # Potong ke dimensi terkecil jika tidak sama
+                        min_dim = min(feats_in.shape[1], t.shape[1])
+                        feats_in_trim = feats_in[:, :min_dim]
+                        t_trim = t[:, :min_dim]
+                        dist = dtw_alignment(feats_in_trim, t_trim, w_val)
+                    else:
+                        dist = dtw_alignment(feats_in, t, w_val)
+                    best_score = min(best_score, dist)
                 scores.append((best_score, label))
             
             scores.sort(key=lambda x: x[0])
@@ -770,7 +708,7 @@ def start_dialect_analysis():
             if winner in db_waves and len(db_waves[winner]) > 0:
                 idx_winner = 0
 
-        # ── Hasil Klasifikasi ──
+        # Hasil Klasifikasi
         st.markdown("""
             <div class="section-header">
                 <span class="section-number">HASIL</span>
@@ -792,14 +730,14 @@ def start_dialect_analysis():
                     <div class="metric-sub">Jarak Cosine DTW</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-label">Mesin VAD</div>
-                    <div class="metric-value green">AKTIF</div>
-                    <div class="metric-sub">Aktivitas Suara Terdeteksi</div>
+                    <div class="metric-label">Dimensi Fitur</div>
+                    <div class="metric-value green">78-D</div>
+                    <div class="metric-sub">MFCC-26 + Delta + Delta2</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
 
-        # ── 1. Waveform ──
+        # Waveform
         st.markdown("""
             <div class="section-header">
                 <span class="section-number">01</span>
@@ -818,7 +756,7 @@ def start_dialect_analysis():
             </div>
         """, unsafe_allow_html=True)
 
-        # ── 2. Heatmap ──
+        # Heatmap
         st.markdown("""
             <div class="section-header">
                 <span class="section-number">02</span>
@@ -827,7 +765,6 @@ def start_dialect_analysis():
             </div>
         """, unsafe_allow_html=True)
         
-        # Hitung similarity untuk heatmap
         h_vals = []
         h_lbls = []
         for label in db_templates.keys():
@@ -844,11 +781,11 @@ def start_dialect_analysis():
         st.markdown(f"""
             <div class="analysis-box">
                 <span class="analysis-title">Analisis Korelasi Matriks</span>
-                <p class="analysis-text">Matriks kemiripan spektral memetakan korelasi fitur MFCC-26 + Pitch + Chroma di seluruh database. Area berwarna biru cerah pada kolom <b>{winner}</b> mengindikasikan densitas kecocokan fitur suara yang paling stabil. Peningkatan dimensi fitur dari 39 ke 102 memberikan diskriminasi yang lebih baik antar dialek.</p>
+                <p class="analysis-text">Matriks kemiripan spektral memetakan korelasi fitur MFCC-26 di seluruh database. Area berwarna biru cerah pada kolom <b>{winner}</b> mengindikasikan densitas kecocokan fitur suara yang paling stabil, meminimalkan bias klasifikasi lintas-dialek.</p>
             </div>
         """, unsafe_allow_html=True)
 
-        # ── 3 & 4. Radar + Spektral ──
+        # Radar dan Spektral
         st.markdown("""
             <div class="section-header">
                 <span class="section-number">03 · 04</span>
@@ -872,7 +809,7 @@ def start_dialect_analysis():
             st.markdown(f"""
                 <div class="analysis-box">
                     <span class="analysis-title">Analisis Distribusi Radar</span>
-                    <p class="analysis-text">Radar distribusi menunjukkan tarikan vektor probabilitas yang condong ke arah sumbu <b>{winner}</b>. Dengan fitur pitch dan chroma, pemisahan antar dialek menjadi lebih jelas.</p>
+                    <p class="analysis-text">Radar distribusi menunjukkan tarikan vektor probabilitas yang condong ke arah sumbu <b>{winner}</b>. Hal ini mengonfirmasi morfologi vokal yang unik dan tidak tumpang tindih dengan dialek referensi lainnya dalam sistem.</p>
                 </div>
             """, unsafe_allow_html=True)
 
@@ -896,7 +833,7 @@ def start_dialect_analysis():
                 </div>
             """, unsafe_allow_html=True)
 
-        # ── 5. Delta MFCC ──
+        # Delta MFCC
         st.markdown("""
             <div class="section-header">
                 <span class="section-number">05</span>
@@ -919,7 +856,7 @@ def start_dialect_analysis():
             </div>
         """, unsafe_allow_html=True)
 
-        # ── 6. Peringkat ──
+        # Peringkat
         st.markdown("""
             <div class="section-header">
                 <span class="section-number">06</span>
@@ -947,22 +884,7 @@ def start_dialect_analysis():
                 </div>
             """, unsafe_allow_html=True)
 
-        # Tambahan saran jika SUNDA tidak terdeteksi
-        if winner != "SUNDA" and any(lbl == "SUNDA" for _, lbl in scores):
-            sunda_score = next((1/(1+s)*100 for s, lbl in scores if lbl == "SUNDA"), 0)
-            st.markdown(f"""
-                <div class="analysis-box" style="border-left-color:#fbbf24;">
-                    <span class="analysis-title">⚠️ Catatan Klasifikasi</span>
-                    <p class="analysis-text">Sistem mendeteksi <b>{winner}</b> (kepercayaan {confidence:.0f}%) bukan SUNDA (kepercayaan {sunda_score:.0f}%). 
-                    Untuk meningkatkan akurasi identifikasi SUNDA, pastikan:<br>
-                    1. File zip bernama <code>Logat_SUNDA.zip</code><br>
-                    2. Audio training memiliki durasi minimal 3-5 detik<br>
-                    3. Gunakan 3-5 sampel berbeda dalam satu zip<br>
-                    4. Rekam dengan lingkungan yang sunyi</p>
-                </div>
-            """, unsafe_allow_html=True)
-
-    # ── Footer ──
+    # Footer
     st.markdown("""
         <div class="app-footer">
             <div class="app-footer-text">
