@@ -38,7 +38,7 @@ def initialize_universal_engine():
 initialize_universal_engine()
 
 # ==============================================================================
-# NAVY UI/UX ENGINE (SAMA PERSIS DENGAN ASLI)
+# NAVY UI/UX ENGINE
 # ==============================================================================
 def apply_professional_styles():
     st.markdown("""
@@ -420,12 +420,12 @@ def apply_professional_styles():
 apply_professional_styles()
 
 # ==============================================================================
-# ACOUSTIC CORE DENGAN DTW
+# IMPROVED ACOUSTIC CORE DENGAN FITUR RICH
 # ==============================================================================
 class AcousticCore:
     def __init__(self, k, w):
         self.SR = 16000
-        self.N_MFCC = 13
+        self.N_MFCC = 26
         self.K = k
         self.W = w
 
@@ -441,8 +441,8 @@ class AcousticCore:
             y, _ = librosa.load(path, sr=self.SR, mono=True)
             return y
 
-    def extract_features(self, y):
-        """Ekstraksi fitur MFCC + Delta + Delta2"""
+    def extract_rich_features(self, y):
+        """Ekstraksi fitur kaya untuk diskriminasi dialek yang lebih baik"""
         # Trim silent parts
         yt, _ = librosa.effects.trim(y, top_db=25)
         
@@ -453,28 +453,55 @@ class AcousticCore:
         if np.max(np.abs(yt)) > 0:
             yt = yt / (np.max(np.abs(yt)) + 1e-8)
         
-        # MFCC
+        # 1. MFCC (26 koefisien)
         mfcc = librosa.feature.mfcc(y=yt, sr=self.SR, n_mfcc=self.N_MFCC)
         
-        # Delta dan Delta-Delta
+        # 2. Delta dan Delta-Delta
         d1 = librosa.feature.delta(mfcc)
         d2 = librosa.feature.delta(mfcc, order=2)
         
-        # Stack features (13+13+13 = 39 fitur per frame)
-        features = np.vstack([mfcc, d1, d2]).T
+        # 3. Spectral Contrast (membedakan karakter vokal daerah)
+        try:
+            contrast = librosa.feature.spectral_contrast(y=yt, sr=self.SR, n_bands=6)
+            # Resize ke dimensi yang sama dengan mfcc
+            if contrast.shape[1] != mfcc.shape[1]:
+                contrast = np.resize(contrast, (contrast.shape[0], mfcc.shape[1]))
+        except:
+            contrast = np.zeros((6, mfcc.shape[1]))
         
-        # Normalisasi z-score per fitur
+        # 4. Chroma Features (untuk karakteristik nada)
+        try:
+            chroma = librosa.feature.chroma_stft(y=yt, sr=self.SR)
+            if chroma.shape[1] != mfcc.shape[1]:
+                chroma = np.resize(chroma, (chroma.shape[0], mfcc.shape[1]))
+        except:
+            chroma = np.zeros((12, mfcc.shape[1]))
+        
+        # 5. Zero Crossing Rate (ritme bicara)
+        zcr = librosa.feature.zero_crossing_rate(yt)
+        if zcr.shape[1] != mfcc.shape[1]:
+            zcr = np.resize(zcr, (1, mfcc.shape[1]))
+        
+        # 6. RMS Energy (tekanan suku kata)
+        rms = librosa.feature.rms(y=yt)
+        if rms.shape[1] != mfcc.shape[1]:
+            rms = np.resize(rms, (1, mfcc.shape[1]))
+        
+        # Stack semua fitur (26+26+26+6+12+1+1 = 98 fitur per frame)
+        features = np.vstack([mfcc, d1, d2, contrast, chroma, zcr, rms]).T
+        
+        # Normalisasi StandardScaler
         scaler = StandardScaler()
         features_norm = scaler.fit_transform(features)
         
-        return features_norm, yt
+        return features_norm, yt, mfcc
 
-def dtw_distance(s1, s2, w):
-    """DTW dengan Euclidean distance"""
+def dtw_with_penalty(s1, s2, w):
+    """DTW dengan slope constraint untuk akurasi lebih baik"""
     n, m = len(s1), len(s2)
     window = max(w, abs(n - m))
     
-    # Cost matrix
+    # Cost matrix dengan Euclidean
     cost = cdist(s1, s2, metric='euclidean')
     
     # DP matrix
@@ -483,11 +510,15 @@ def dtw_distance(s1, s2, w):
     
     for i in range(1, n + 1):
         for j in range(max(1, i - window), min(m, i + window) + 1):
-            dp[i, j] = cost[i-1, j-1] + min(dp[i-1, j], dp[i, j-1], dp[i-1, j-1])
+            # Slope constraint: prefer diagonal moves
+            dp[i, j] = cost[i-1, j-1] + min(
+                dp[i-1, j] * 1.05,      # vertical move (penalty)
+                dp[i, j-1] * 1.05,      # horizontal move (penalty)
+                dp[i-1, j-1]            # diagonal move (no penalty)
+            )
     
-    # Normalisasi dengan panjang path
-    path_len = n + m
-    return dp[n, m] / (path_len + 1e-8)
+    # Normalisasi dengan panjang
+    return dp[n, m] / (n + m)
 
 # ==============================================================================
 # VISUALIZATION ENGINE
@@ -581,7 +612,7 @@ def start_dialect_analysis():
 
         st.markdown('<div class="sidebar-section-label">Konfigurasi Parameter</div>', unsafe_allow_html=True)
         k_val = st.slider("Sensitivitas Klasifikasi (K)", 1, 15, 5)
-        w_val = st.slider("Batas Jendela (W)", 20, 400, 120, step=10)
+        w_val = st.slider("Batas Jendela (W)", 20, 400, 200, step=10)  # Default lebih besar
 
         st.markdown('<div class="sidebar-section-label">Sistem</div>', unsafe_allow_html=True)
         if st.button("Muat Ulang Database", use_container_width=True):
@@ -591,7 +622,7 @@ def start_dialect_analysis():
         st.markdown("""
             <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid rgba(56,189,248,0.1);">
                 <div style="font-family:'DM Mono',monospace;font-size:0.58rem;color:#4a6b9b;letter-spacing:1.5px;text-align:center;">
-                    DTW + MFCC ENGINE
+                    DTW + MFCC-26 + SPECTRAL CONTRAST
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -603,10 +634,10 @@ def start_dialect_analysis():
             <h1 class="hero-title">
                 Laboratorium <span>Pengenalan</span><br>Dialek
             </h1>
-            <div class="hero-subtitle">Dynamic Time Warping · Ekstraksi Fitur MFCC · Mesin VAD</div>
+            <div class="hero-subtitle">Dynamic Time Warping · MFCC-26 · Spectral Contrast</div>
             <div class="hero-badges">
                 <span class="hero-badge">DTW</span>
-                <span class="hero-badge">Euclidean Distance</span>
+                <span class="hero-badge">98-D Features</span>
                 <span class="hero-badge">Universal Decoder</span>
                 <span class="hero-badge">Multi-Dialek</span>
             </div>
@@ -628,7 +659,7 @@ def start_dialect_analysis():
                     if f.suffix.lower() in ['.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg']:
                         y = core.load_audio(str(f))
                         if y is not None and len(y) > 0:
-                            feats, yt = core.extract_features(y)
+                            feats, yt, _ = core.extract_rich_features(y)
                             if feats is not None and len(feats) > 0:
                                 db_templates[label].append(feats)
                                 db_waves[label].append(yt)
@@ -672,7 +703,7 @@ def start_dialect_analysis():
 
     # Pipeline
     if audio_stream:
-        with st.spinner("Memproses dekomposisi spektral..."):
+        with st.spinner("Memproses dekomposisi spektral dengan 98 fitur..."):
             with tempfile.NamedTemporaryFile(suffix=Path(source_id).suffix, delete=False) as tmp:
                 tmp.write(audio_stream)
                 path = tmp.name
@@ -684,7 +715,7 @@ def start_dialect_analysis():
                 os.remove(path)
                 return
                 
-            feats_in, y_in_t = core.extract_features(y_raw)
+            feats_in, y_in_t, mfcc_in = core.extract_rich_features(y_raw)
             os.remove(path)
             
             if feats_in is None or len(feats_in) == 0:
@@ -704,7 +735,7 @@ def start_dialect_analysis():
                     f1 = feats_in[:min_len]
                     f2 = t[:min_len]
                     
-                    dist = dtw_distance(f1, f2, w_val)
+                    dist = dtw_with_penalty(f1, f2, w_val)
                     
                     if dist < best_dist:
                         best_dist = dist
@@ -712,16 +743,14 @@ def start_dialect_analysis():
                 
                 distances.append((best_dist, label, best_idx))
             
-            # Urutkan dari jarak terkecil (paling mirip)
+            # Urutkan dari jarak terkecil
             distances.sort(key=lambda x: x[0])
             
+            # Normalisasi jarak ke similarity (0-100%)
+            max_dist = max(distances[0][0] + 0.1, 1.0)
             winner = distances[0][1]
-            # Konversi jarak ke similarity (0-100%)
-            confidence = max(0, min(100, (1 / (1 + distances[0][0])) * 100))
+            confidence = max(0, min(100, (1 - distances[0][0] / max_dist) * 100))
             best_match_idx = distances[0][2]
-            
-            # MFCC untuk visualisasi
-            mfcc_in = librosa.feature.mfcc(y=y_in_t, sr=16000, n_mfcc=13)
 
         # Hasil Klasifikasi
         st.markdown("""
@@ -737,17 +766,17 @@ def start_dialect_analysis():
                 <div class="metric-card">
                     <div class="metric-label">Identitas Dialek</div>
                     <div class="metric-value">{winner}</div>
-                    <div class="metric-sub">Klasifikasi Utama</div>
+                    <div class="metric-sub">Klasifikasi Utama (DTW)</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">Skor Kepercayaan</div>
                     <div class="metric-value">{confidence:.1f}%</div>
-                    <div class="metric-sub">DTW Euclidean Distance</div>
+                    <div class="metric-sub">DTW + Spectral Contrast</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-label">Mesin VAD</div>
-                    <div class="metric-value green">AKTIF</div>
-                    <div class="metric-sub">Aktivitas Suara Terdeteksi</div>
+                    <div class="metric-label">Dimensi Fitur</div>
+                    <div class="metric-value green">98-D</div>
+                    <div class="metric-sub">MFCC-26 + Delta + Contrast</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -782,8 +811,9 @@ def start_dialect_analysis():
         
         h_vals = []
         h_lbls = []
+        max_d = max([d for d, _, _ in distances]) + 0.1
         for dist, label, _ in distances:
-            sim = max(0, min(100, (1 / (1 + dist)) * 100))
+            sim = max(0, min(100, (1 - dist / max_d) * 100))
             h_vals.append(sim)
             h_lbls.append(label)
         
@@ -793,7 +823,7 @@ def start_dialect_analysis():
         st.markdown(f"""
             <div class="analysis-box">
                 <span class="analysis-title">Analisis Korelasi Matriks</span>
-                <p class="analysis-text">Matriks kemiripan spektral memetakan korelasi fitur MFCC di seluruh database. Area berwarna biru cerah pada kolom <b>{winner}</b> mengindikasikan densitas kecocokan fitur suara yang paling stabil, meminimalkan bias klasifikasi lintas-dialek.</p>
+                <p class="analysis-text">Matriks kemiripan spektral memetakan korelasi fitur MFCC-26 + Spectral Contrast di seluruh database. Area berwarna biru cerah pada kolom <b>{winner}</b> mengindikasikan densitas kecocokan fitur suara yang paling stabil. Fitur tambahan seperti Spectral Contrast membantu membedakan dialek dengan lebih akurat.</p>
             </div>
         """, unsafe_allow_html=True)
 
@@ -810,13 +840,13 @@ def start_dialect_analysis():
         with col_l:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
             u_labs = [lbl for _, lbl, _ in distances]
-            v_radar = [max(0, min(100, (1 / (1 + dist)) * 100)) for dist, _, _ in distances]
+            v_radar = [max(0, min(100, (1 - d / max_d) * 100)) for d, _, _ in distances]
             st.plotly_chart(viz.plot_radar(u_labs, v_radar), use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown(f"""
                 <div class="analysis-box">
                     <span class="analysis-title">Analisis Distribusi Radar</span>
-                    <p class="analysis-text">Radar distribusi menunjukkan tarikan vektor probabilitas yang condong ke arah sumbu <b>{winner}</b>. Hal ini mengonfirmasi morfologi vokal yang unik dan tidak tumpang tindih dengan dialek referensi lainnya dalam sistem.</p>
+                    <p class="analysis-text">Radar distribusi menunjukkan tarikan vektor probabilitas yang condong ke arah sumbu <b>{winner}</b>. Dengan fitur yang lebih kaya (98 dimensi), pemisahan antar dialek menjadi lebih jelas.</p>
                 </div>
             """, unsafe_allow_html=True)
 
@@ -873,7 +903,7 @@ def start_dialect_analysis():
         """, unsafe_allow_html=True)
 
         for rank_idx, (dist, name, _) in enumerate(distances):
-            similarity_pct = max(0, min(100, (1 / (1 + dist)) * 100))
+            similarity_pct = max(0, min(100, (1 - dist / max_d) * 100))
             is_top = rank_idx == 0
             bar_class = "rank-bar-fill top" if is_top else "rank-bar-fill"
             item_class = "rank-item top" if is_top else "rank-item"
