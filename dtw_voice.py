@@ -14,6 +14,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.spatial.distance import cdist
 from sklearn.preprocessing import StandardScaler
+from joblib import Parallel, delayed
 
 st.set_page_config(
     page_title="Analisis Akustik Dialek",
@@ -458,8 +459,19 @@ class AcousticCore:
                 mfcc_cp[:, i] = mfcc_cp[:, i] / max_val
         return mfcc_cp
 
-    def extract_features(self, y):
-        """Ekstraksi fitur MFCC dengan preprocessing"""
+    def subsample_mfcc(self, mfcc, factor=2):
+        """
+        Frame subsampling: ambil setiap `factor` kolom.
+        Mengurangi panjang temporal sebelum masuk FastDTW,
+        sehingga jumlah komputasi turun ~factor× tanpa kehilangan
+        pola fonem utama (perubahan vokal/konsonan terjadi dalam
+        puluhan ms, bukan frame-per-frame).
+        factor=2 → resolusi 20ms (dari 10ms hop default librosa).
+        """
+        return mfcc[:, ::factor]
+
+    def extract_features(self, y, subsample_factor=2):
+        """Ekstraksi fitur MFCC dengan preprocessing + subsampling"""
         # Trim silent parts
         yt, _ = librosa.effects.trim(y, top_db=25)
         
@@ -475,8 +487,11 @@ class AcousticCore:
         
         # Preprocessing seperti dosen
         mfcc_processed = self.preprocess_mfcc(mfcc)
+
+        # Frame subsampling: kurangi resolusi temporal untuk mempercepat DTW
+        mfcc_subsampled = self.subsample_mfcc(mfcc_processed, factor=subsample_factor)
         
-        return mfcc_processed, yt
+        return mfcc_subsampled, yt
 
 def dtw_distance(s1, s2, w):
     """
@@ -533,40 +548,57 @@ def dtw_sliding_window(test_mfcc, train_mfcc, w_val):
     return best_dist
 
 # ==============================================================================
-# ENSEMBLE CLASSIFIER - GABUNGAN DTW DAN COSINE SIMILARITY
+# ENSEMBLE CLASSIFIER - PARALEL + FastDTW + SUBSAMPLING
 # ==============================================================================
+def _score_label(label, templates, test_mfcc, w_val):
+    """
+    Hitung skor terbaik untuk satu label dialek.
+    Fungsi terpisah agar bisa dijalankan paralel oleh joblib.
+    """
+    best_dtw  = float('inf')
+    best_combined = -1
+    best_idx  = 0
+
+    # Precompute centroid test sekali saja (tidak perlu diulang per template)
+    centroid_test = np.mean(test_mfcc, axis=1)
+    norm_test = np.linalg.norm(centroid_test) + 1e-8
+
+    for idx, train_mfcc in enumerate(templates):
+        # 1. FastDTW sliding window
+        dtw_dist = dtw_sliding_window(test_mfcc, train_mfcc, w_val)
+        dtw_sim  = 1 / (1 + dtw_dist)
+
+        # 2. Cosine similarity centroid
+        centroid_train = np.mean(train_mfcc, axis=1)
+        cos_sim = np.dot(centroid_test, centroid_train) / (
+            norm_test * (np.linalg.norm(centroid_train) + 1e-8)
+        )
+        cos_sim = max(0.0, min(1.0, cos_sim))
+
+        # Weighted ensemble
+        combined = 0.6 * dtw_sim + 0.4 * cos_sim
+
+        if combined > best_combined:
+            best_combined = combined
+            best_dtw      = dtw_dist
+            best_idx      = idx
+
+    return (best_combined, best_dtw, label, best_idx)
+
+
 def ensemble_classify(test_mfcc, db_templates, w_val):
-    """Ensemble: DTW sliding window + Cosine similarity centroid"""
-    results = []
-    
-    for label, templates in db_templates.items():
-        best_dtw = float('inf')
-        best_cosine = -1
-        best_idx = 0
-        
-        for idx, train_mfcc in enumerate(templates):
-            # 1. DTW dengan sliding window
-            dtw_dist = dtw_sliding_window(test_mfcc, train_mfcc, w_val)
-            dtw_sim = 1 / (1 + dtw_dist)
-            
-            # 2. Cosine similarity untuk centroid (global feature)
-            centroid_test = np.mean(test_mfcc, axis=1)
-            centroid_train = np.mean(train_mfcc, axis=1)
-            cos_sim = np.dot(centroid_test, centroid_train) / (
-                np.linalg.norm(centroid_test) * np.linalg.norm(centroid_train) + 1e-8
-            )
-            cos_sim = max(0, min(1, cos_sim))
-            
-            # Kombinasi weighted
-            combined = 0.6 * dtw_sim + 0.4 * cos_sim
-            
-            if combined > best_cosine:
-                best_cosine = combined
-                best_dtw = dtw_dist
-                best_idx = idx
-        
-        results.append((best_cosine, best_dtw, label, best_idx))
-    
+    """
+    Ensemble paralel: semua dialek diproses serentak dengan joblib.
+    n_jobs=-1 → pakai semua CPU core yang tersedia.
+    prefer='threads' cocok karena FastDTW sudah melepas GIL.
+    """
+    items = list(db_templates.items())
+
+    results = Parallel(n_jobs=-1, prefer="threads")(
+        delayed(_score_label)(label, templates, test_mfcc, w_val)
+        for label, templates in items
+    )
+
     # Urutkan dari similarity tertinggi
     results.sort(key=lambda x: x[0], reverse=True)
     return results
@@ -689,6 +721,8 @@ def start_dialect_analysis():
             <div class="hero-badges">
                 <span class="hero-badge">FastDTW Sliding Window</span>
                 <span class="hero-badge">MFCC Preprocessing</span>
+                <span class="hero-badge">Parallel Processing</span>
+                <span class="hero-badge">Frame Subsampling</span>
                 <span class="hero-badge">Ensemble</span>
                 <span class="hero-badge">Multi-Dialek</span>
             </div>
@@ -802,7 +836,7 @@ def start_dialect_analysis():
                 <div class="metric-card">
                     <div class="metric-label">Skor Kepercayaan</div>
                     <div class="metric-value">{confidence:.1f}%</div>
-                    <div class="metric-sub">FastDTW Sliding Window + Cosine</div>
+                    <div class="metric-sub">FastDTW + Parallel + Subsampling</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">Metode</div>
