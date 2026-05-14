@@ -16,6 +16,12 @@ from scipy.spatial.distance import cdist
 from sklearn.preprocessing import StandardScaler
 from joblib import Parallel, delayed
 
+try:
+    from fastdtw import fastdtw as _fastdtw
+    _FASTDTW_AVAILABLE = True
+except ImportError:
+    _FASTDTW_AVAILABLE = False
+
 st.set_page_config(
     page_title="Analisis Akustik Dialek",
     page_icon="🎙️",
@@ -493,55 +499,82 @@ class AcousticCore:
         
         return mfcc_subsampled, yt
 
+def _euclidean_np(a, b):
+    """Euclidean distance berbasis numpy — jauh lebih cepat dari scipy.euclidean
+    untuk dipanggil berulang kali di dalam FastDTW."""
+    diff = a - b
+    return np.sqrt(np.dot(diff, diff))
+
+
 def dtw_distance(s1, s2, w):
     """
-    FastDTW dengan radius = w sebagai pengganti Sakoe-Chiba window.
-    FastDTW: O(N) waktu & memori → jauh lebih cepat dari DTW klasik O(N²),
-    akurasi hampir sama karena menggunakan pendekatan multiresolusi.
-    Fallback ke DTW klasik jika fastdtw tidak tersedia.
+    FastDTW dengan numpy euclidean (bukan scipy per-call).
+    Fallback ke DTW klasik vektorisasi penuh jika fastdtw tidak ada.
     """
-    try:
-        from fastdtw import fastdtw
-        from scipy.spatial.distance import euclidean
+    if _FASTDTW_AVAILABLE:
         n, m = len(s1), len(s2)
-        # radius ≈ w pada FastDTW setara dengan Sakoe-Chiba band
         radius = max(w, abs(n - m))
-        dist, _ = fastdtw(s1, s2, radius=radius, dist=euclidean)
+        dist, _ = _fastdtw(s1, s2, radius=radius, dist=_euclidean_np)
         return dist / (n + m)
-    except ImportError:
-        # Fallback: DTW klasik dengan Sakoe-Chiba window
+    else:
+        # DTW klasik dengan cdist vektorisasi (tidak ada Python loop jarak)
         n, m = len(s1), len(s2)
         window = max(w, abs(n - m))
         cost = cdist(s1, s2, metric='euclidean')
         dp = np.full((n + 1, m + 1), np.inf)
         dp[0, 0] = 0
         for i in range(1, n + 1):
-            for j in range(max(1, i - window), min(m, i + window) + 1):
-                dp[i, j] = cost[i-1, j-1] + min(dp[i-1, j], dp[i, j-1], dp[i-1, j-1])
+            j0 = max(1, i - window)
+            j1 = min(m, i + window) + 1
+            dp[i, j0:j1] = cost[i-1, j0-1:j1-1] + np.minimum(
+                np.minimum(dp[i-1, j0:j1], dp[i, j0-1:j1-1]),
+                dp[i-1, j0-1:j1-1]
+            )
         return dp[n, m] / (n + m)
 
 
-def dtw_sliding_window(test_mfcc, train_mfcc, w_val):
+def dtw_sliding_window(test_mfcc, train_mfcc, w_val, stride=3):
     """
-    FastDTW Sliding Window.
-    Geser jendela sepanjang sequence yang lebih panjang, cari posisi
-    dengan jarak FastDTW terkecil terhadap template (yang lebih pendek).
+    FastDTW Sliding Window dengan STRIDE.
+
+    stride=3 → evaluasi posisi window setiap 3 frame (bukan setiap 1 frame).
+    Dengan subsampling factor=2 (20ms/frame), stride=3 = lompat 60ms.
+    Perubahan fonem terjadi dalam >50ms sehingga posisi optimal tetap tertangkap.
+    Mengurangi jumlah panggilan FastDTW hingga ~3× lebih sedikit.
+
+    Fase refinement: setelah menemukan posisi terbaik via stride kasar,
+    lakukan scan halus ±stride di sekitar posisi tersebut untuk akurasi penuh.
     """
-    len_test = test_mfcc.shape[1]
+    len_test  = test_mfcc.shape[1]
     len_train = train_mfcc.shape[1]
 
-    # Pastikan test selalu yang lebih panjang (window digeser di atasnya)
     if len_train > len_test:
-        return dtw_sliding_window(train_mfcc, test_mfcc, w_val)
+        return dtw_sliding_window(train_mfcc, test_mfcc, w_val, stride)
 
     num_windows = len_test - len_train + 1
-    best_dist = float('inf')
 
-    for start in range(num_windows):
-        end = start + len_train
-        test_window = test_mfcc[:, start:end]
-        # FastDTW bekerja pada baris (frame), jadi transpose → (T × n_mfcc)
-        dist = dtw_distance(test_window.T, train_mfcc.T, w_val)
+    if num_windows <= 1:
+        # Tidak perlu sliding sama sekali
+        return dtw_distance(test_mfcc.T, train_mfcc.T, w_val)
+
+    train_T = train_mfcc.T  # transpose sekali di luar loop
+
+    # --- Fase 1: Scan kasar dengan stride ---
+    best_dist  = float('inf')
+    best_start = 0
+    for start in range(0, num_windows, stride):
+        dist = dtw_distance(test_mfcc[:, start:start + len_train].T, train_T, w_val)
+        if dist < best_dist:
+            best_dist  = dist
+            best_start = start
+
+    # --- Fase 2: Refinement halus di sekitar posisi terbaik ---
+    lo = max(0, best_start - stride)
+    hi = min(num_windows, best_start + stride + 1)
+    for start in range(lo, hi):
+        if start % stride == 0:
+            continue  # sudah dihitung di fase 1
+        dist = dtw_distance(test_mfcc[:, start:start + len_train].T, train_T, w_val)
         if dist < best_dist:
             best_dist = dist
 
