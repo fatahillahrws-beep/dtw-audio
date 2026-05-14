@@ -465,19 +465,23 @@ class AcousticCore:
                 mfcc_cp[:, i] = mfcc_cp[:, i] / max_val
         return mfcc_cp
 
-    def subsample_mfcc(self, mfcc, factor=2):
+    def subsample_mfcc(self, mfcc, factor=3):
         """
         Frame subsampling: ambil setiap `factor` kolom.
-        Mengurangi panjang temporal sebelum masuk FastDTW,
-        sehingga jumlah komputasi turun ~factor× tanpa kehilangan
-        pola fonem utama (perubahan vokal/konsonan terjadi dalam
-        puluhan ms, bukan frame-per-frame).
-        factor=2 → resolusi 20ms (dari 10ms hop default librosa).
+        factor=3 → resolusi 30ms — cukup untuk menangkap pola fonem,
+        sekaligus memotong panjang sequence ~3× lebih pendek.
         """
         return mfcc[:, ::factor]
 
-    def extract_features(self, y, subsample_factor=2):
+    def extract_features(self, y, subsample_factor=3):
         """Ekstraksi fitur MFCC dengan preprocessing + subsampling"""
+        # === TRUNCATE: ambil max 5 detik pertama ===
+        # Dialek sudah terdeteksi dari 3–5 detik pertama.
+        # Memproses 30 detik penuh hanya membuang waktu.
+        max_samples = self.SR * 5
+        if len(y) > max_samples:
+            y = y[:max_samples]
+
         # Trim silent parts
         yt, _ = librosa.effects.trim(y, top_db=25)
         
@@ -488,13 +492,13 @@ class AcousticCore:
         if np.max(np.abs(yt)) > 0:
             yt = yt / (np.max(np.abs(yt)) + 1e-8)
         
-        # MFCC
-        mfcc = librosa.feature.mfcc(y=yt, sr=self.SR, n_mfcc=self.N_MFCC)
+        # MFCC dengan hop_length lebih besar → lebih sedikit frame
+        mfcc = librosa.feature.mfcc(y=yt, sr=self.SR, n_mfcc=self.N_MFCC, hop_length=256)
         
-        # Preprocessing seperti dosen
+        # Preprocessing
         mfcc_processed = self.preprocess_mfcc(mfcc)
 
-        # Frame subsampling: kurangi resolusi temporal untuk mempercepat DTW
+        # Frame subsampling
         mfcc_subsampled = self.subsample_mfcc(mfcc_processed, factor=subsample_factor)
         
         return mfcc_subsampled, yt
@@ -533,7 +537,7 @@ def dtw_distance(s1, s2, w):
         return dp[n, m] / (n + m)
 
 
-def dtw_sliding_window(test_mfcc, train_mfcc, w_val, stride=3):
+def dtw_sliding_window(test_mfcc, train_mfcc, w_val, stride=5):
     """
     FastDTW Sliding Window dengan STRIDE.
 
