@@ -12,7 +12,6 @@ import librosa
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.spatial.distance import cdist
-from scipy.stats import pearsonr
 from sklearn.preprocessing import StandardScaler
 
 st.set_page_config(
@@ -421,12 +420,12 @@ def apply_professional_styles():
 apply_professional_styles()
 
 # ==============================================================================
-# ENSEMBLE ACOUSTIC CORE - MULTI-METRIC
+# ACOUSTIC CORE
 # ==============================================================================
-class EnsembleAcousticCore:
+class AcousticCore:
     def __init__(self, k, w):
         self.SR = 16000
-        self.N_MFCC = 26
+        self.N_MFCC = 13
         self.K = k
         self.W = w
 
@@ -442,93 +441,30 @@ class EnsembleAcousticCore:
             y, _ = librosa.load(path, sr=self.SR, mono=True)
             return y
 
-    def extract_all_features(self, y):
-        """Ekstraksi semua fitur yang mungkin"""
-        # Trim dan normalisasi
+    def extract_features(self, y):
+        """Ekstraksi fitur MFCC + Delta + Delta2"""
         yt, _ = librosa.effects.trim(y, top_db=25)
         if len(yt) < self.SR * 0.3:
             yt = y
         if np.max(np.abs(yt)) > 0:
             yt = yt / (np.max(np.abs(yt)) + 1e-8)
         
-        # 1. MFCC (26 koefisien)
         mfcc = librosa.feature.mfcc(y=yt, sr=self.SR, n_mfcc=self.N_MFCC)
+        d1 = librosa.feature.delta(mfcc)
+        d2 = librosa.feature.delta(mfcc, order=2)
         
-        # 2. Delta dan Delta-Delta
-        delta1 = librosa.feature.delta(mfcc)
-        delta2 = librosa.feature.delta(mfcc, order=2)
-        
-        # 3. Spectral Contrast
-        try:
-            contrast = librosa.feature.spectral_contrast(y=yt, sr=self.SR, n_bands=6)
-            if contrast.shape[1] != mfcc.shape[1]:
-                contrast = np.resize(contrast, (contrast.shape[0], mfcc.shape[1]))
-        except:
-            contrast = np.zeros((6, mfcc.shape[1]))
-        
-        # 4. Chroma
-        try:
-            chroma = librosa.feature.chroma_stft(y=yt, sr=self.SR)
-            if chroma.shape[1] != mfcc.shape[1]:
-                chroma = np.resize(chroma, (chroma.shape[0], mfcc.shape[1]))
-        except:
-            chroma = np.zeros((12, mfcc.shape[1]))
-        
-        # 5. Zero Crossing Rate
-        zcr = librosa.feature.zero_crossing_rate(yt)
-        if zcr.shape[1] != mfcc.shape[1]:
-            zcr = np.resize(zcr, (1, mfcc.shape[1]))
-        
-        # 6. RMS Energy
-        rms = librosa.feature.rms(y=yt)
-        if rms.shape[1] != mfcc.shape[1]:
-            rms = np.resize(rms, (1, mfcc.shape[1]))
-        
-        # 7. Spectral Centroid
-        centroid = librosa.feature.spectral_centroid(y=yt, sr=self.SR)
-        if centroid.shape[1] != mfcc.shape[1]:
-            centroid = np.resize(centroid, (1, mfcc.shape[1]))
-        
-        # 8. Spectral Bandwidth
-        bandwidth = librosa.feature.spectral_bandwidth(y=yt, sr=self.SR)
-        if bandwidth.shape[1] != mfcc.shape[1]:
-            bandwidth = np.resize(bandwidth, (1, mfcc.shape[1]))
-        
-        # 9. Spectral Rolloff
-        rolloff = librosa.feature.spectral_rolloff(y=yt, sr=self.SR)
-        if rolloff.shape[1] != mfcc.shape[1]:
-            rolloff = np.resize(rolloff, (1, mfcc.shape[1]))
-        
-        # Stack semua fitur (total: 26+26+26+6+12+1+1+1+1+1 = 101 fitur)
-        features = np.vstack([mfcc, delta1, delta2, contrast, chroma, zcr, rms, centroid, bandwidth, rolloff]).T
-        
-        # Normalisasi
+        features = np.vstack([mfcc, d1, d2]).T
         scaler = StandardScaler()
         features_norm = scaler.fit_transform(features)
         
         return features_norm, yt, mfcc
 
-def dtw_multi_metric(s1, s2, w):
-    """DTW dengan multiple metrics yang digabung"""
+def dtw_distance(s1, s2, w):
+    """DTW dengan Euclidean distance"""
     n, m = len(s1), len(s2)
     window = max(w, abs(n - m))
+    cost = cdist(s1, s2, metric='euclidean')
     
-    # Multiple distance metrics
-    cost_euclidean = cdist(s1, s2, metric='euclidean')
-    cost_cosine = cdist(s1, s2, metric='cosine')
-    cost_manhattan = cdist(s1, s2, metric='cityblock')
-    
-    # Normalisasi setiap cost
-    cost_euclidean_norm = cost_euclidean / (np.max(cost_euclidean) + 1e-8)
-    cost_cosine_norm = cost_cosine / (np.max(cost_cosine) + 1e-8)
-    cost_manhattan_norm = cost_manhattan / (np.max(cost_manhattan) + 1e-8)
-    
-    # Weighted combination (bobot dioptimasi)
-    cost = (0.4 * cost_euclidean_norm + 
-            0.4 * cost_cosine_norm + 
-            0.2 * cost_manhattan_norm)
-    
-    # DP dengan slope constraint
     dp = np.full((n + 1, m + 1), np.inf)
     dp[0, 0] = 0
     
@@ -537,61 +473,6 @@ def dtw_multi_metric(s1, s2, w):
             dp[i, j] = cost[i-1, j-1] + min(dp[i-1, j], dp[i, j-1], dp[i-1, j-1])
     
     return dp[n, m] / (n + m)
-
-def cosine_similarity_vectors(v1, v2):
-    """Cosine similarity antara dua vektor"""
-    dot = np.dot(v1, v2)
-    norm1 = np.linalg.norm(v1)
-    norm2 = np.linalg.norm(v2)
-    return dot / (norm1 * norm2 + 1e-8)
-
-def ensemble_classification(feats_in, mfcc_in, db_templates, db_centroids, w_val):
-    """Ensemble classification dengan semua metode"""
-    results = []
-    
-    for label, templates in db_templates.items():
-        dtw_scores = []
-        centroid_scores = []
-        mfcc_profile_scores = []
-        
-        for idx, t in enumerate(templates):
-            # 1. DTW dengan multi-metric
-            min_len = min(len(feats_in), len(t))
-            dtw_dist = dtw_multi_metric(feats_in[:min_len], t[:min_len], w_val)
-            dtw_sim = 1 / (1 + dtw_dist)
-            dtw_scores.append(dtw_sim)
-            
-            # 2. Centroid-based similarity
-            centroid_in = db_centroids["input"]
-            centroid_label = db_centroids[label][idx]
-            centroid_sim = cosine_similarity_vectors(centroid_in, centroid_label)
-            centroid_scores.append(centroid_sim)
-            
-            # 3. MFCC profile similarity (statistik global)
-            mfcc_mean_in = np.mean(mfcc_in, axis=1)
-            mfcc_std_in = np.std(mfcc_in, axis=1)
-            mfcc_mean_t = np.mean(db_templates[label][idx], axis=0)[:13] if len(db_templates[label][idx][0]) > 13 else np.mean(db_templates[label][idx], axis=0)
-            mfcc_std_t = np.std(db_templates[label][idx], axis=0)[:13] if len(db_templates[label][idx][0]) > 13 else np.std(db_templates[label][idx], axis=0)
-            
-            # Pastikan dimensi sama
-            min_len_mfcc = min(len(mfcc_mean_in), len(mfcc_mean_t))
-            profile_sim = cosine_similarity_vectors(mfcc_mean_in[:min_len_mfcc], mfcc_mean_t[:min_len_mfcc])
-            profile_sim += cosine_similarity_vectors(mfcc_std_in[:min_len_mfcc], mfcc_std_t[:min_len_mfcc])
-            profile_sim /= 2
-            mfcc_profile_scores.append(profile_sim)
-        
-        # Ambil skor terbaik untuk setiap metode
-        best_dtw = max(dtw_scores)
-        best_centroid = max(centroid_scores)
-        best_profile = max(mfcc_profile_scores)
-        
-        # Weighted ensemble (bobot berdasarkan performa)
-        final_score = (0.5 * best_dtw + 0.3 * best_centroid + 0.2 * best_profile)
-        results.append((final_score, label))
-    
-    # Urutkan dari skor tertinggi
-    results.sort(key=lambda x: x[0], reverse=True)
-    return results
 
 # ==============================================================================
 # VISUALIZATION ENGINE
@@ -685,7 +566,7 @@ def start_dialect_analysis():
 
         st.markdown('<div class="sidebar-section-label">Konfigurasi Parameter</div>', unsafe_allow_html=True)
         k_val = st.slider("Sensitivitas Klasifikasi (K)", 1, 15, 5)
-        w_val = st.slider("Batas Jendela (W)", 20, 400, 150, step=10)
+        w_val = st.slider("Batas Jendela (W)", 20, 400, 120, step=10)
 
         st.markdown('<div class="sidebar-section-label">Sistem</div>', unsafe_allow_html=True)
         if st.button("Muat Ulang Database", use_container_width=True):
@@ -695,7 +576,7 @@ def start_dialect_analysis():
         st.markdown("""
             <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid rgba(56,189,248,0.1);">
                 <div style="font-family:'DM Mono',monospace;font-size:0.58rem;color:#4a6b9b;letter-spacing:1.5px;text-align:center;">
-                    ENSEMBLE CLASSIFIER · DTW + CENTROID + MFCC PROFILE
+                    DTW + MFCC ENGINE
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -707,25 +588,22 @@ def start_dialect_analysis():
             <h1 class="hero-title">
                 Laboratorium <span>Pengenalan</span><br>Dialek
             </h1>
-            <div class="hero-subtitle">Ensemble Classifier · DTW Multi-Metric · MFCC-26 · 101-D Features</div>
+            <div class="hero-subtitle">Dynamic Time Warping · Ekstraksi Fitur MFCC · Mesin VAD</div>
             <div class="hero-badges">
-                <span class="hero-badge">Ensemble</span>
-                <span class="hero-badge">DTW + Centroid</span>
-                <span class="hero-badge">101-D Features</span>
+                <span class="hero-badge">DTW</span>
+                <span class="hero-badge">Euclidean Distance</span>
                 <span class="hero-badge">Universal Decoder</span>
+                <span class="hero-badge">Multi-Dialek</span>
             </div>
         </div>
     """, unsafe_allow_html=True)
 
-    core = EnsembleAcousticCore(k_val, w_val)
+    core = AcousticCore(k_val, w_val)
     viz = VizEngine()
 
     @st.cache_resource
     def boot_database():
-        db_templates = defaultdict(list)
-        db_waves = defaultdict(list)
-        db_centroids = defaultdict(list)
-        
+        db_templates, db_waves = defaultdict(list), defaultdict(list)
         for z in zip_files:
             label = z.stem.replace("Logat_", "").upper()
             with tempfile.TemporaryDirectory() as td:
@@ -735,14 +613,13 @@ def start_dialect_analysis():
                     if f.suffix.lower() in ['.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg']:
                         y = core.load_audio(str(f))
                         if y is not None and len(y) > 0:
-                            feats, yt, mfcc = core.extract_all_features(y)
+                            feats, yt, _ = core.extract_features(y)
                             if feats is not None and len(feats) > 0:
                                 db_templates[label].append(feats)
                                 db_waves[label].append(yt)
-                                db_centroids[label].append(np.mean(feats, axis=0))
-        return db_templates, db_waves, db_centroids
+        return db_templates, db_waves
 
-    db_templates, db_waves, db_centroids = boot_database()
+    db_templates, db_waves = boot_database()
 
     if not db_templates:
         st.error("Dataset akustik tidak ditemukan. Harap sediakan arsip .zip di direktori kerja.")
@@ -780,7 +657,7 @@ def start_dialect_analysis():
 
     # Pipeline
     if audio_stream:
-        with st.spinner("Memproses dengan Ensemble Classifier (101 fitur, multi-metric)..."):
+        with st.spinner("Memproses dekomposisi spektral..."):
             with tempfile.NamedTemporaryFile(suffix=Path(source_id).suffix, delete=False) as tmp:
                 tmp.write(audio_stream)
                 path = tmp.name
@@ -792,32 +669,39 @@ def start_dialect_analysis():
                 os.remove(path)
                 return
                 
-            feats_in, y_in_t, mfcc_in = core.extract_all_features(y_raw)
+            feats_in, y_in_t, mfcc_in = core.extract_features(y_raw)
             os.remove(path)
             
             if feats_in is None or len(feats_in) == 0:
                 st.error("Gagal mengekstrak fitur dari audio.")
                 return
 
-            # Simpan centroid input untuk ensemble
-            centroid_in = np.mean(feats_in, axis=0)
-            db_centroids["input"] = [centroid_in]  # Temporary untuk akses
+            # Klasifikasi dengan DTW
+            distances = []
             
-            # Ensemble classification
-            results = ensemble_classification(feats_in, mfcc_in, db_templates, db_centroids, w_val)
+            for label, templates in db_templates.items():
+                best_dist = float('inf')
+                best_idx = 0
+                
+                for idx, t in enumerate(templates):
+                    min_len = min(len(feats_in), len(t))
+                    f1 = feats_in[:min_len]
+                    f2 = t[:min_len]
+                    
+                    dist = dtw_distance(f1, f2, w_val)
+                    
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_idx = idx
+                
+                distances.append((best_dist, label, best_idx))
             
-            winner = results[0][1]
-            confidence = results[0][0] * 100
+            # Urutkan dari jarak terkecil
+            distances.sort(key=lambda x: x[0])
             
-            # Cari template terbaik untuk visualisasi
-            best_match_idx = 0
-            best_match_score = 0
-            for idx, t in enumerate(db_templates[winner]):
-                min_len = min(len(feats_in), len(t))
-                sim = 1 / (1 + dtw_multi_metric(feats_in[:min_len], t[:min_len], w_val))
-                if sim > best_match_score:
-                    best_match_score = sim
-                    best_match_idx = idx
+            winner = distances[0][1]
+            confidence = (1 / (1 + distances[0][0])) * 100
+            best_match_idx = distances[0][2]
 
         # Hasil Klasifikasi
         st.markdown("""
@@ -833,17 +717,17 @@ def start_dialect_analysis():
                 <div class="metric-card">
                     <div class="metric-label">Identitas Dialek</div>
                     <div class="metric-value">{winner}</div>
-                    <div class="metric-sub">Ensemble Classification</div>
+                    <div class="metric-sub">Klasifikasi Utama</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">Skor Kepercayaan</div>
                     <div class="metric-value">{confidence:.1f}%</div>
-                    <div class="metric-sub">DTW + Centroid + MFCC Profile</div>
+                    <div class="metric-sub">DTW Euclidean Distance</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-label">Dimensi Fitur</div>
-                    <div class="metric-value green">101-D</div>
-                    <div class="metric-sub">Multi-Metric Ensemble</div>
+                    <div class="metric-label">Mesin VAD</div>
+                    <div class="metric-value green">AKTIF</div>
+                    <div class="metric-sub">Aktivitas Suara Terdeteksi</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -863,7 +747,7 @@ def start_dialect_analysis():
         st.markdown(f"""
             <div class="analysis-box">
                 <span class="analysis-title">Analisis Konsistensi Temporal</span>
-                <p class="analysis-text">Perbandingan waveform memetakan sinkronisasi modulasi antara sinyal input dan referensi master. Dialek <b>{winner}</b> mendominasi karena memiliki struktur penekanan suku kata dan ritme bicara yang paling identik. Ensemble classifier menggabungkan DTW, centroid, dan MFCC profile untuk hasil optimal.</p>
+                <p class="analysis-text">Perbandingan waveform memetakan sinkronisasi modulasi antara sinyal input dan referensi master. Dialek <b>{winner}</b> mendominasi karena memiliki struktur penekanan suku kata dan ritme bicara yang paling identik. Decoder Universal memastikan integritas sinyal tetap terjaga meskipun audio berasal dari format terkompresi.</p>
             </div>
         """, unsafe_allow_html=True)
 
@@ -876,8 +760,12 @@ def start_dialect_analysis():
             </div>
         """, unsafe_allow_html=True)
         
-        h_vals = [score * 100 for score, _ in results]
-        h_lbls = [label for _, label in results]
+        h_vals = []
+        h_lbls = []
+        for dist, label, _ in distances:
+            sim = (1 / (1 + dist)) * 100
+            h_vals.append(sim)
+            h_lbls.append(label)
         
         st.markdown('<div class="chart-container">', unsafe_allow_html=True)
         st.plotly_chart(viz.plot_heatmap(h_vals, h_lbls), use_container_width=True)
@@ -885,7 +773,7 @@ def start_dialect_analysis():
         st.markdown(f"""
             <div class="analysis-box">
                 <span class="analysis-title">Analisis Korelasi Matriks</span>
-                <p class="analysis-text">Matriks kemiripan spektral memetakan korelasi fitur 101-dimensi di seluruh database. Ensemble classifier mempertimbangkan DTW (50%), centroid similarity (30%), dan MFCC profile (20%) untuk menghasilkan skor kepercayaan yang akurat.</p>
+                <p class="analysis-text">Matriks kemiripan spektral memetakan korelasi fitur MFCC di seluruh database. Area berwarna biru cerah pada kolom <b>{winner}</b> mengindikasikan densitas kecocokan fitur suara yang paling stabil, meminimalkan bias klasifikasi lintas-dialek.</p>
             </div>
         """, unsafe_allow_html=True)
 
@@ -901,14 +789,14 @@ def start_dialect_analysis():
 
         with col_l:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-            u_labs = [label for _, label in results]
-            v_radar = [score * 100 for score, _ in results]
+            u_labs = [lbl for _, lbl, _ in distances]
+            v_radar = [(1 / (1 + d)) * 100 for d, _, _ in distances]
             st.plotly_chart(viz.plot_radar(u_labs, v_radar), use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown(f"""
                 <div class="analysis-box">
                     <span class="analysis-title">Analisis Distribusi Radar</span>
-                    <p class="analysis-text">Radar distribusi menunjukkan tarikan vektor probabilitas yang condong ke arah sumbu <b>{winner}</b>. Ensemble classifier memastikan bahwa keputusan tidak hanya berdasarkan satu metode, tetapi gabungan dari DTW, centroid, dan profil MFCC.</p>
+                    <p class="analysis-text">Radar distribusi menunjukkan tarikan vektor probabilitas yang condong ke arah sumbu <b>{winner}</b>. Hal ini mengonfirmasi morfologi vokal yang unik dan tidak tumpang tindih dengan dialek referensi lainnya dalam sistem.</p>
                 </div>
             """, unsafe_allow_html=True)
 
@@ -964,8 +852,8 @@ def start_dialect_analysis():
             </div>
         """, unsafe_allow_html=True)
 
-        for rank_idx, (score, name) in enumerate(results):
-            similarity_pct = score * 100
+        for rank_idx, (dist, name, _) in enumerate(distances):
+            similarity_pct = (1 / (1 + dist)) * 100
             is_top = rank_idx == 0
             bar_class = "rank-bar-fill top" if is_top else "rank-bar-fill"
             item_class = "rank-item top" if is_top else "rank-item"
