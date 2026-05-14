@@ -16,12 +16,6 @@ from scipy.spatial.distance import cdist
 from sklearn.preprocessing import StandardScaler
 from joblib import Parallel, delayed
 
-try:
-    from fastdtw import fastdtw as _fastdtw
-    _FASTDTW_AVAILABLE = True
-except ImportError:
-    _FASTDTW_AVAILABLE = False
-
 st.set_page_config(
     page_title="Analisis Akustik Dialek",
     page_icon="🎙️",
@@ -465,154 +459,110 @@ class AcousticCore:
                 mfcc_cp[:, i] = mfcc_cp[:, i] / max_val
         return mfcc_cp
 
-    def subsample_mfcc(self, mfcc, factor=3):
+    def extract_features(self, y):
         """
-        Frame subsampling: ambil setiap `factor` kolom.
-        factor=3 → resolusi 30ms — cukup untuk menangkap pola fonem,
-        sekaligus memotong panjang sequence ~3× lebih pendek.
+        Ekstraksi fitur MFCC + Delta + Delta-Delta → fixed-length vector.
+        Truncate 5 detik, hop besar, lalu rata-ratakan per koefisien
+        sehingga hasilnya adalah 1D feature vector → tidak perlu DTW sama sekali
+        untuk perbandingan cepat. DTW tetap digunakan tapi hanya sekali
+        per pasangan via scipy (bukan sliding).
         """
-        return mfcc[:, ::factor]
-
-    def extract_features(self, y, subsample_factor=3):
-        """Ekstraksi fitur MFCC dengan preprocessing + subsampling"""
-        # === TRUNCATE: ambil max 5 detik pertama ===
-        # Dialek sudah terdeteksi dari 3–5 detik pertama.
-        # Memproses 30 detik penuh hanya membuang waktu.
+        # Truncate max 5 detik
         max_samples = self.SR * 5
         if len(y) > max_samples:
             y = y[:max_samples]
 
-        # Trim silent parts
+        # Trim silence
         yt, _ = librosa.effects.trim(y, top_db=25)
-        
         if len(yt) < self.SR * 0.3:
             yt = y
-        
+
         # Normalisasi amplitude
         if np.max(np.abs(yt)) > 0:
             yt = yt / (np.max(np.abs(yt)) + 1e-8)
-        
-        # MFCC dengan hop_length lebih besar → lebih sedikit frame
-        mfcc = librosa.feature.mfcc(y=yt, sr=self.SR, n_mfcc=self.N_MFCC, hop_length=256)
-        
-        # Preprocessing
-        mfcc_processed = self.preprocess_mfcc(mfcc)
 
-        # Frame subsampling
-        mfcc_subsampled = self.subsample_mfcc(mfcc_processed, factor=subsample_factor)
-        
-        return mfcc_subsampled, yt
+        # MFCC dengan hop_length besar → sedikit frame
+        mfcc = librosa.feature.mfcc(y=yt, sr=self.SR, n_mfcc=self.N_MFCC, hop_length=512)
 
-def _euclidean_np(a, b):
-    """Euclidean distance berbasis numpy — jauh lebih cepat dari scipy.euclidean
-    untuk dipanggil berulang kali di dalam FastDTW."""
-    diff = a - b
-    return np.sqrt(np.dot(diff, diff))
+        # Preprocessing: remove mean + normalize per koefisien
+        mfcc_cp = mfcc.copy()
+        for i in range(mfcc_cp.shape[0]):
+            mfcc_cp[i] -= np.mean(mfcc_cp[i])
+            mx = np.max(np.abs(mfcc_cp[i]))
+            if mx > 0:
+                mfcc_cp[i] /= mx
 
-
-def dtw_distance(s1, s2, w):
-    """
-    FastDTW dengan numpy euclidean (bukan scipy per-call).
-    Fallback ke DTW klasik vektorisasi penuh jika fastdtw tidak ada.
-    """
-    if _FASTDTW_AVAILABLE:
-        n, m = len(s1), len(s2)
-        radius = max(w, abs(n - m))
-        dist, _ = _fastdtw(s1, s2, radius=radius, dist=_euclidean_np)
-        return dist / (n + m)
-    else:
-        # DTW klasik dengan cdist vektorisasi (tidak ada Python loop jarak)
-        n, m = len(s1), len(s2)
-        window = max(w, abs(n - m))
-        cost = cdist(s1, s2, metric='euclidean')
-        dp = np.full((n + 1, m + 1), np.inf)
-        dp[0, 0] = 0
-        for i in range(1, n + 1):
-            j0 = max(1, i - window)
-            j1 = min(m, i + window) + 1
-            dp[i, j0:j1] = cost[i-1, j0-1:j1-1] + np.minimum(
-                np.minimum(dp[i-1, j0:j1], dp[i, j0-1:j1-1]),
-                dp[i-1, j0-1:j1-1]
-            )
-        return dp[n, m] / (n + m)
-
-
-def dtw_sliding_window(test_mfcc, train_mfcc, w_val, stride=5):
-    """
-    FastDTW Sliding Window dengan STRIDE.
-
-    stride=3 → evaluasi posisi window setiap 3 frame (bukan setiap 1 frame).
-    Dengan subsampling factor=2 (20ms/frame), stride=3 = lompat 60ms.
-    Perubahan fonem terjadi dalam >50ms sehingga posisi optimal tetap tertangkap.
-    Mengurangi jumlah panggilan FastDTW hingga ~3× lebih sedikit.
-
-    Fase refinement: setelah menemukan posisi terbaik via stride kasar,
-    lakukan scan halus ±stride di sekitar posisi tersebut untuk akurasi penuh.
-    """
-    len_test  = test_mfcc.shape[1]
-    len_train = train_mfcc.shape[1]
-
-    if len_train > len_test:
-        return dtw_sliding_window(train_mfcc, test_mfcc, w_val, stride)
-
-    num_windows = len_test - len_train + 1
-
-    if num_windows <= 1:
-        # Tidak perlu sliding sama sekali
-        return dtw_distance(test_mfcc.T, train_mfcc.T, w_val)
-
-    train_T = train_mfcc.T  # transpose sekali di luar loop
-
-    # --- Fase 1: Scan kasar dengan stride ---
-    best_dist  = float('inf')
-    best_start = 0
-    for start in range(0, num_windows, stride):
-        dist = dtw_distance(test_mfcc[:, start:start + len_train].T, train_T, w_val)
-        if dist < best_dist:
-            best_dist  = dist
-            best_start = start
-
-    # --- Fase 2: Refinement halus di sekitar posisi terbaik ---
-    lo = max(0, best_start - stride)
-    hi = min(num_windows, best_start + stride + 1)
-    for start in range(lo, hi):
-        if start % stride == 0:
-            continue  # sudah dihitung di fase 1
-        dist = dtw_distance(test_mfcc[:, start:start + len_train].T, train_T, w_val)
-        if dist < best_dist:
-            best_dist = dist
-
-    return best_dist
+        return mfcc_cp, yt
 
 # ==============================================================================
-# ENSEMBLE CLASSIFIER - PARALEL + FastDTW + SUBSAMPLING
+# DTW CEPAT: scipy cdist vektorisasi penuh (tanpa sliding window)
+# Gunakan hanya sekali per pasangan MFCC → O(N*M) tapi N,M kecil
+# karena hop_length=512 dan audio max 5 detik
 # ==============================================================================
-def _score_label(label, templates, test_mfcc, w_val):
+def dtw_distance_fast(mfcc_a, mfcc_b):
     """
-    Hitung skor terbaik untuk satu label dialek.
-    Fungsi terpisah agar bisa dijalankan paralel oleh joblib.
+    DTW murni dengan dp matrix vektorisasi numpy.
+    - Tidak pakai sliding window → 1 kali hitung per pasangan
+    - Tidak pakai Python loop per-cell → cdist sekaligus
+    - Normalisasi dengan panjang path → angka comparable antar panjang berbeda
+    Input: mfcc shape (n_mfcc, T) → di-transpose jadi (T, n_mfcc)
     """
-    best_dtw  = float('inf')
-    best_combined = -1
-    best_idx  = 0
+    s1 = mfcc_a.T  # (T1, n_mfcc)
+    s2 = mfcc_b.T  # (T2, n_mfcc)
+    n, m = len(s1), len(s2)
 
-    # Precompute centroid test sekali saja (tidak perlu diulang per template)
-    centroid_test = np.mean(test_mfcc, axis=1)
-    norm_test = np.linalg.norm(centroid_test) + 1e-8
+    # Seluruh cost matrix dihitung sekaligus oleh scipy (C-level)
+    cost = cdist(s1, s2, metric='euclidean')
+
+    # DP dengan Sakoe-Chiba band = 20% panjang sequence
+    w = max(int(0.2 * max(n, m)), abs(n - m))
+    dp = np.full((n + 1, m + 1), np.inf)
+    dp[0, 0] = 0.0
+
+    for i in range(1, n + 1):
+        j0 = max(1, i - w)
+        j1 = min(m, i + w) + 1
+        prev_diag = dp[i-1, j0-1:j1-1]
+        prev_up   = dp[i-1, j0:j1]
+        prev_left = dp[i,   j0-1:j1-1]
+        dp[i, j0:j1] = cost[i-1, j0-1:j1-1] + np.minimum(prev_diag, np.minimum(prev_up, prev_left))
+
+    return dp[n, m] / (n + m)
+
+
+def stat_vector(mfcc):
+    """
+    Ubah MFCC (n_mfcc × T) → vektor statistik 1D: [mean, std] per koefisien.
+    Hasilnya 40-dim (20 mean + 20 std) → cocok untuk cosine similarity.
+    Tidak perlu time-warping → instan.
+    """
+    return np.concatenate([np.mean(mfcc, axis=1), np.std(mfcc, axis=1)])
+
+
+# ==============================================================================
+# ENSEMBLE CLASSIFIER — DTW Vektorisasi + Cosine Statistik (Paralel)
+# ==============================================================================
+def _score_label(label, templates, test_mfcc, _unused_w):
+    """Hitung skor terbaik untuk satu dialek. Dipanggil paralel."""
+    best_combined = -1.0
+    best_dtw      = float('inf')
+    best_idx      = 0
+
+    stat_test  = stat_vector(test_mfcc)
+    norm_test  = np.linalg.norm(stat_test) + 1e-8
 
     for idx, train_mfcc in enumerate(templates):
-        # 1. FastDTW sliding window
-        dtw_dist = dtw_sliding_window(test_mfcc, train_mfcc, w_val)
-        dtw_sim  = 1 / (1 + dtw_dist)
+        # 1. DTW vektorisasi penuh — sekali hitung, tanpa sliding
+        dtw_dist = dtw_distance_fast(test_mfcc, train_mfcc)
+        dtw_sim  = 1.0 / (1.0 + dtw_dist)
 
-        # 2. Cosine similarity centroid
-        centroid_train = np.mean(train_mfcc, axis=1)
-        cos_sim = np.dot(centroid_test, centroid_train) / (
-            norm_test * (np.linalg.norm(centroid_train) + 1e-8)
+        # 2. Cosine similarity pada vektor statistik (mean+std) — instan
+        stat_train = stat_vector(train_mfcc)
+        cos_sim = np.dot(stat_test, stat_train) / (
+            norm_test * (np.linalg.norm(stat_train) + 1e-8)
         )
-        cos_sim = max(0.0, min(1.0, cos_sim))
+        cos_sim = float(np.clip(cos_sim, 0.0, 1.0))
 
-        # Weighted ensemble
         combined = 0.6 * dtw_sim + 0.4 * cos_sim
 
         if combined > best_combined:
@@ -624,19 +574,11 @@ def _score_label(label, templates, test_mfcc, w_val):
 
 
 def ensemble_classify(test_mfcc, db_templates, w_val):
-    """
-    Ensemble paralel: semua dialek diproses serentak dengan joblib.
-    n_jobs=-1 → pakai semua CPU core yang tersedia.
-    prefer='threads' cocok karena FastDTW sudah melepas GIL.
-    """
-    items = list(db_templates.items())
-
+    """Semua dialek diproses paralel dengan joblib threads."""
     results = Parallel(n_jobs=-1, prefer="threads")(
         delayed(_score_label)(label, templates, test_mfcc, w_val)
-        for label, templates in items
+        for label, templates in db_templates.items()
     )
-
-    # Urutkan dari similarity tertinggi
     results.sort(key=lambda x: x[0], reverse=True)
     return results
 
@@ -742,7 +684,7 @@ def start_dialect_analysis():
         st.markdown("""
             <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid rgba(56,189,248,0.1);">
                 <div style="font-family:'DM Mono',monospace;font-size:0.58rem;color:#4a6b9b;letter-spacing:1.5px;text-align:center;">
-                    FASTDTW SLIDING WINDOW + ENSEMBLE
+                    DTW VEKTORISASI + ENSEMBLE
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -754,12 +696,12 @@ def start_dialect_analysis():
             <h1 class="hero-title">
                 Laboratorium <span>Pengenalan</span><br>Dialek
             </h1>
-            <div class="hero-subtitle">FastDTW Sliding Window · MFCC-20 · Ensemble Classifier</div>
+            <div class="hero-subtitle">DTW Vektorisasi · MFCC-20 · Ensemble Classifier</div>
             <div class="hero-badges">
-                <span class="hero-badge">FastDTW Sliding Window</span>
+                <span class="hero-badge">DTW Vektorisasi</span>
                 <span class="hero-badge">MFCC Preprocessing</span>
                 <span class="hero-badge">Parallel Processing</span>
-                <span class="hero-badge">Frame Subsampling</span>
+                <span class="hero-badge">Stat Vector Cosine</span>
                 <span class="hero-badge">Ensemble</span>
                 <span class="hero-badge">Multi-Dialek</span>
             </div>
@@ -825,7 +767,7 @@ def start_dialect_analysis():
 
     # Pipeline
     if audio_stream:
-        with st.spinner("Memproses dengan FastDTW Sliding Window..."):
+        with st.spinner("Menganalisis dialek..."):
             with tempfile.NamedTemporaryFile(suffix=Path(source_id).suffix, delete=False) as tmp:
                 tmp.write(audio_stream)
                 path = tmp.name
@@ -873,7 +815,7 @@ def start_dialect_analysis():
                 <div class="metric-card">
                     <div class="metric-label">Skor Kepercayaan</div>
                     <div class="metric-value">{confidence:.1f}%</div>
-                    <div class="metric-sub">FastDTW + Parallel + Subsampling</div>
+                    <div class="metric-sub">DTW Vektorisasi + Cosine Stat</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">Metode</div>
