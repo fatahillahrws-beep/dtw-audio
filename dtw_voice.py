@@ -38,7 +38,7 @@ def initialize_universal_engine():
 initialize_universal_engine()
 
 # ==============================================================================
-# NAVY UI/UX ENGINE (SAMA PERSIS DENGAN ASLI)
+# NAVY UI/UX ENGINE
 # ==============================================================================
 def apply_professional_styles():
     st.markdown("""
@@ -420,12 +420,12 @@ def apply_professional_styles():
 apply_professional_styles()
 
 # ==============================================================================
-# ACOUSTIC CORE DENGAN DIMENSI KONSISTEN
+# IMPROVED ACOUSTIC CORE DENGAN NORMALISASI BETTER
 # ==============================================================================
 class AcousticCore:
     def __init__(self, k, w):
         self.SR = 16000
-        self.N_MFCC = 13  # Standar MFCC
+        self.N_MFCC = 20
         self.K = k
         self.W = w
 
@@ -442,7 +442,7 @@ class AcousticCore:
             return y
 
     def extract_features(self, y):
-        """Ekstraksi fitur konsisten"""
+        """Ekstraksi fitur dengan normalisasi yang baik"""
         # Trim silent parts
         yt, _ = librosa.effects.trim(y, top_db=25)
         
@@ -460,29 +460,26 @@ class AcousticCore:
         d1 = librosa.feature.delta(mfcc)
         d2 = librosa.feature.delta(mfcc, order=2)
         
-        # Stack features (13+13+13 = 39 fitur per frame)
+        # Stack features
         features = np.vstack([mfcc, d1, d2]).T
         
-        return features, yt
+        # Normalisasi per feature dimension (z-score)
+        scaler = StandardScaler()
+        features_norm = scaler.fit_transform(features)
+        
+        return features_norm, yt
 
-# ==============================================================================
-# DTW ALIGNMENT
-# ==============================================================================
-def dtw_distance(s1, s2, w_const):
-    """DTW distance dengan Euclidean metric"""
-    n, m = len(s1), len(s2)
-    w = max(w_const, abs(n - m))
-    dp = np.full((n + 1, m + 1), np.inf)
-    dp[0, 0] = 0.0
+def cosine_similarity_matrix(f1, f2):
+    """Cosine similarity antara dua matriks fitur"""
+    # Normalisasi vektor per baris
+    f1_norm = f1 / (np.linalg.norm(f1, axis=1, keepdims=True) + 1e-8)
+    f2_norm = f2 / (np.linalg.norm(f2, axis=1, keepdims=True) + 1e-8)
     
-    cost = cdist(s1, s2, metric='euclidean')
+    # Matriks similarity
+    sim = np.dot(f1_norm, f2_norm.T)
     
-    for i in range(1, n + 1):
-        for j in range(max(1, i-w), min(m, i+w)+1):
-            prev_min = min(dp[i-1, j], dp[i, j-1], dp[i-1, j-1])
-            dp[i, j] = cost[i-1, j-1] + prev_min
-    
-    return dp[n, m] / (n + m)
+    # Rata-rata similarity terbaik
+    return 1 - np.mean(np.max(sim, axis=1))
 
 # ==============================================================================
 # VISUALIZATION ENGINE
@@ -601,7 +598,7 @@ def start_dialect_analysis():
             <div class="hero-subtitle">Dynamic Time Warping · Ekstraksi Fitur MFCC · Mesin VAD</div>
             <div class="hero-badges">
                 <span class="hero-badge">DSP Hybrid</span>
-                <span class="hero-badge">Euclidean Distance</span>
+                <span class="hero-badge">Cosine Similarity</span>
                 <span class="hero-badge">Universal Decoder</span>
                 <span class="hero-badge">Multi-Dialek</span>
             </div>
@@ -686,33 +683,34 @@ def start_dialect_analysis():
                 st.error("Gagal mengekstrak fitur dari audio.")
                 return
 
-            # Klasifikasi dengan DTW
-            all_distances = []
+            # Klasifikasi dengan Cosine Similarity (lebih stabil)
+            similarities = []
             
             for label, templates in db_templates.items():
-                best_dist = float('inf')
+                best_sim = -1  # Similarity tertinggi
                 best_idx = 0
                 
                 for idx, t in enumerate(templates):
-                    # Pastikan dimensi sama
-                    min_len = min(len(feats_in), len(t))
-                    feats_trim = feats_in[:min_len]
-                    t_trim = t[:min_len]
+                    # Gunakan cosine similarity untuk matching
+                    sim = cosine_similarity_matrix(feats_in, t)
+                    # sim adalah distance (0 = perfect match, 2 = worst)
+                    # Konversi ke similarity score
+                    score = 1 - sim
                     
-                    dist = dtw_distance(feats_trim, t_trim, w_val)
-                    
-                    if dist < best_dist:
-                        best_dist = dist
+                    if score > best_sim:
+                        best_sim = score
                         best_idx = idx
                 
-                all_distances.append((best_dist, label, best_idx))
+                # Konversi ke distance (semakin kecil semakin mirip)
+                dist = 1 - best_sim
+                similarities.append((dist, label, best_idx, best_sim))
             
             # Urutkan dari jarak terkecil (paling mirip)
-            all_distances.sort(key=lambda x: x[0])
+            similarities.sort(key=lambda x: x[0])
             
-            winner = all_distances[0][1]
-            confidence = (1 / (1 + all_distances[0][0])) * 100
-            best_match_idx = all_distances[0][2]
+            winner = similarities[0][1]
+            confidence = similarities[0][3] * 100  # Similarity score dalam persen
+            best_match_idx = similarities[0][2]
             
             # MFCC untuk visualisasi
             mfcc_in = librosa.feature.mfcc(y=y_in_t, sr=16000, n_mfcc=13)
@@ -736,7 +734,7 @@ def start_dialect_analysis():
                 <div class="metric-card">
                     <div class="metric-label">Skor Kepercayaan</div>
                     <div class="metric-value">{confidence:.1f}%</div>
-                    <div class="metric-sub">Jarak Euclidean DTW</div>
+                    <div class="metric-sub">Cosine Similarity</div>
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">Mesin VAD</div>
@@ -745,11 +743,6 @@ def start_dialect_analysis():
                 </div>
             </div>
         """, unsafe_allow_html=True)
-
-        # Debug distances
-        with st.expander("📊 Detail Jarak per Dialek (Debug)"):
-            for dist, label, _ in all_distances:
-                st.write(f"**{label}**: {dist:.6f}")
 
         # Waveform
         st.markdown("""
@@ -781,9 +774,8 @@ def start_dialect_analysis():
         
         h_vals = []
         h_lbls = []
-        for dist, label, _ in all_distances:
-            similarity = 1 / (1 + dist) * 100
-            h_vals.append(similarity)
+        for dist, label, _, sim in similarities:
+            h_vals.append(sim * 100)
             h_lbls.append(label)
         
         st.markdown('<div class="chart-container">', unsafe_allow_html=True)
@@ -808,8 +800,8 @@ def start_dialect_analysis():
 
         with col_l:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-            u_labs = [lbl for _, lbl, _ in all_distances]
-            v_radar = [1/(1+dist)*100 for dist, _, _ in all_distances]
+            u_labs = [lbl for _, lbl, _, _ in similarities]
+            v_radar = [sim * 100 for _, _, _, sim in similarities]
             st.plotly_chart(viz.plot_radar(u_labs, v_radar), use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown(f"""
@@ -871,8 +863,8 @@ def start_dialect_analysis():
             </div>
         """, unsafe_allow_html=True)
 
-        for rank_idx, (dist, name, _) in enumerate(all_distances):
-            similarity = 1 / (1 + dist) * 100
+        for rank_idx, (dist, name, _, sim) in enumerate(similarities):
+            similarity_pct = sim * 100
             is_top = rank_idx == 0
             bar_class = "rank-bar-fill top" if is_top else "rank-bar-fill"
             item_class = "rank-item top" if is_top else "rank-item"
@@ -883,9 +875,9 @@ def start_dialect_analysis():
                     <div class="rank-num">#{rank_idx+1}</div>
                     <div class="rank-name">{name} <span style="font-size:0.65rem;color:#4a6b9b;font-weight:400;">{label_top}</span></div>
                     <div class="rank-bar-bg">
-                        <div class="{bar_class}" style="width:{similarity:.1f}%"></div>
+                        <div class="{bar_class}" style="width:{similarity_pct:.1f}%"></div>
                     </div>
-                    <div class="{pct_class}">{similarity:.1f}%</div>
+                    <div class="{pct_class}">{similarity_pct:.1f}%</div>
                 </div>
             """, unsafe_allow_html=True)
 
