@@ -420,7 +420,7 @@ def apply_professional_styles():
 apply_professional_styles()
 
 # ==============================================================================
-# IMPROVED ACOUSTIC CORE DENGAN NORMALISASI BETTER
+# IMPROVED ACOUSTIC CORE
 # ==============================================================================
 class AcousticCore:
     def __init__(self, k, w):
@@ -442,7 +442,7 @@ class AcousticCore:
             return y
 
     def extract_features(self, y):
-        """Ekstraksi fitur dengan normalisasi yang baik"""
+        """Ekstraksi fitur MFCC dengan normalisasi"""
         # Trim silent parts
         yt, _ = librosa.effects.trim(y, top_db=25)
         
@@ -460,26 +460,30 @@ class AcousticCore:
         d1 = librosa.feature.delta(mfcc)
         d2 = librosa.feature.delta(mfcc, order=2)
         
-        # Stack features
+        # Stack features (20+20+20 = 60 fitur per frame)
         features = np.vstack([mfcc, d1, d2]).T
         
-        # Normalisasi per feature dimension (z-score)
-        scaler = StandardScaler()
-        features_norm = scaler.fit_transform(features)
-        
-        return features_norm, yt
+        return features, yt
 
-def cosine_similarity_matrix(f1, f2):
-    """Cosine similarity antara dua matriks fitur"""
-    # Normalisasi vektor per baris
-    f1_norm = f1 / (np.linalg.norm(f1, axis=1, keepdims=True) + 1e-8)
-    f2_norm = f2 / (np.linalg.norm(f2, axis=1, keepdims=True) + 1e-8)
+def calculate_similarity(f1, f2):
+    """Menghitung kemiripan antara dua matriks fitur menggunakan mean cosine similarity"""
+    # Pastikan dimensi sama dengan memotong ke panjang minimum
+    min_len = min(len(f1), len(f2))
+    f1_trim = f1[:min_len]
+    f2_trim = f2[:min_len]
     
-    # Matriks similarity
-    sim = np.dot(f1_norm, f2_norm.T)
+    # Hitung cosine similarity per frame
+    dot_product = np.sum(f1_trim * f2_trim, axis=1)
+    norm1 = np.linalg.norm(f1_trim, axis=1)
+    norm2 = np.linalg.norm(f2_trim, axis=1)
     
-    # Rata-rata similarity terbaik
-    return 1 - np.mean(np.max(sim, axis=1))
+    # Cosine similarity per frame (hindari division by zero)
+    cos_sim = dot_product / (norm1 * norm2 + 1e-8)
+    
+    # Rata-rata similarity (nilai antara -1 sampai 1, clamp ke 0-1)
+    mean_sim = np.mean(np.clip(cos_sim, 0, 1))
+    
+    return mean_sim
 
 # ==============================================================================
 # VISUALIZATION ENGINE
@@ -583,7 +587,7 @@ def start_dialect_analysis():
         st.markdown("""
             <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid rgba(56,189,248,0.1);">
                 <div style="font-family:'DM Mono',monospace;font-size:0.58rem;color:#4a6b9b;letter-spacing:1.5px;text-align:center;">
-                    DTW + MFCC ENGINE
+                    MFCC-20 + COSINE SIMILARITY
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -595,10 +599,10 @@ def start_dialect_analysis():
             <h1 class="hero-title">
                 Laboratorium <span>Pengenalan</span><br>Dialek
             </h1>
-            <div class="hero-subtitle">Dynamic Time Warping · Ekstraksi Fitur MFCC · Mesin VAD</div>
+            <div class="hero-subtitle">MFCC-20 · Cosine Similarity · Frame-based Matching</div>
             <div class="hero-badges">
-                <span class="hero-badge">DSP Hybrid</span>
                 <span class="hero-badge">Cosine Similarity</span>
+                <span class="hero-badge">MFCC-20</span>
                 <span class="hero-badge">Universal Decoder</span>
                 <span class="hero-badge">Multi-Dialek</span>
             </div>
@@ -683,33 +687,27 @@ def start_dialect_analysis():
                 st.error("Gagal mengekstrak fitur dari audio.")
                 return
 
-            # Klasifikasi dengan Cosine Similarity (lebih stabil)
+            # Klasifikasi dengan Cosine Similarity
             similarities = []
             
             for label, templates in db_templates.items():
-                best_sim = -1  # Similarity tertinggi
+                best_sim = 0
                 best_idx = 0
                 
                 for idx, t in enumerate(templates):
-                    # Gunakan cosine similarity untuk matching
-                    sim = cosine_similarity_matrix(feats_in, t)
-                    # sim adalah distance (0 = perfect match, 2 = worst)
-                    # Konversi ke similarity score
-                    score = 1 - sim
+                    sim = calculate_similarity(feats_in, t)
                     
-                    if score > best_sim:
-                        best_sim = score
+                    if sim > best_sim:
+                        best_sim = sim
                         best_idx = idx
                 
-                # Konversi ke distance (semakin kecil semakin mirip)
-                dist = 1 - best_sim
-                similarities.append((dist, label, best_idx, best_sim))
+                similarities.append((best_sim, label, best_idx))
             
-            # Urutkan dari jarak terkecil (paling mirip)
-            similarities.sort(key=lambda x: x[0])
+            # Urutkan dari similarity tertinggi
+            similarities.sort(key=lambda x: x[0], reverse=True)
             
             winner = similarities[0][1]
-            confidence = similarities[0][3] * 100  # Similarity score dalam persen
+            confidence = similarities[0][0] * 100
             best_match_idx = similarities[0][2]
             
             # MFCC untuk visualisasi
@@ -774,7 +772,7 @@ def start_dialect_analysis():
         
         h_vals = []
         h_lbls = []
-        for dist, label, _, sim in similarities:
+        for sim, label, _ in similarities:
             h_vals.append(sim * 100)
             h_lbls.append(label)
         
@@ -784,7 +782,7 @@ def start_dialect_analysis():
         st.markdown(f"""
             <div class="analysis-box">
                 <span class="analysis-title">Analisis Korelasi Matriks</span>
-                <p class="analysis-text">Matriks kemiripan spektral memetakan korelasi fitur MFCC di seluruh database. Area berwarna biru cerah pada kolom <b>{winner}</b> mengindikasikan densitas kecocokan fitur suara yang paling stabil, meminimalkan bias klasifikasi lintas-dialek.</p>
+                <p class="analysis-text">Matriks kemiripan spektral memetakan korelasi fitur MFCC-20 di seluruh database. Area berwarna biru cerah pada kolom <b>{winner}</b> mengindikasikan densitas kecocokan fitur suara yang paling stabil, meminimalkan bias klasifikasi lintas-dialek.</p>
             </div>
         """, unsafe_allow_html=True)
 
@@ -800,8 +798,8 @@ def start_dialect_analysis():
 
         with col_l:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-            u_labs = [lbl for _, lbl, _, _ in similarities]
-            v_radar = [sim * 100 for _, _, _, sim in similarities]
+            u_labs = [lbl for _, lbl, _ in similarities]
+            v_radar = [sim * 100 for sim, _, _ in similarities]
             st.plotly_chart(viz.plot_radar(u_labs, v_radar), use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown(f"""
@@ -863,7 +861,7 @@ def start_dialect_analysis():
             </div>
         """, unsafe_allow_html=True)
 
-        for rank_idx, (dist, name, _, sim) in enumerate(similarities):
+        for rank_idx, (sim, name, _) in enumerate(similarities):
             similarity_pct = sim * 100
             is_top = rank_idx == 0
             bar_class = "rank-bar-fill top" if is_top else "rank-bar-fill"
