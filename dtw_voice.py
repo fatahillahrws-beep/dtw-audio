@@ -35,12 +35,6 @@ def initialize_universal_engine():
         with st.spinner("Menyiapkan decoder audio..."):
             subprocess.check_call([sys.executable, "-m", "pip", "install", "pydub", "imageio-ffmpeg"])
             st.rerun()
-    try:
-        from fastdtw import fastdtw  # noqa: F401
-    except ImportError:
-        with st.spinner("Menginstal FastDTW..."):
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "fastdtw"])
-            st.rerun()
     return True
 
 initialize_universal_engine()
@@ -201,11 +195,13 @@ def apply_professional_styles():
         }
         .metric-value {
             font-family: 'Syne', sans-serif;
-            font-size: clamp(1.2rem, 2.5vw, 2rem);
+            font-size: clamp(1rem, 1.8vw, 1.6rem);
             font-weight: 800;
-            color: var(--accent-sky); line-height: 1.15;
-            word-break: break-word;
-            overflow-wrap: anywhere;
+            color: var(--accent-sky); line-height: 1.2;
+            word-break: keep-all;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .metric-value.green { color: var(--accent-emerald); }
         .metric-sub {
