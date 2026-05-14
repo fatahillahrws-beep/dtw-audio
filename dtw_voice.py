@@ -414,18 +414,44 @@ def apply_professional_styles():
         }
 
         hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
+        
+        /* Style untuk database info card */
+        .db-info-card {
+            background: linear-gradient(145deg, var(--navy-600), var(--navy-700));
+            border-radius: 12px;
+            padding: 0.8rem 1rem;
+            margin-bottom: 0.8rem;
+            border-left: 3px solid var(--accent-emerald);
+        }
+        .db-info-label {
+            font-family: 'DM Mono', monospace;
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            letter-spacing: 1px;
+        }
+        .db-info-value {
+            font-family: 'Syne', sans-serif;
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--accent-sky);
+        }
+        .db-info-count {
+            font-family: 'DM Mono', monospace;
+            font-size: 0.7rem;
+            color: var(--accent-emerald);
+        }
     </style>
     """, unsafe_allow_html=True)
 
 apply_professional_styles()
 
 # ==============================================================================
-# FIXED ACOUSTIC PROCESSING CORE (DENGAN DIMENSI KONSISTEN)
+# ACOUSTIC PROCESSING CORE
 # ==============================================================================
 class AcousticCore:
     def __init__(self, k, w):
         self.SR = 16000
-        self.N_MFCC = 26  # Ditingkatkan dari 13 ke 26
+        self.N_MFCC = 26
         self.K = k
         self.W = w
 
@@ -442,22 +468,17 @@ class AcousticCore:
             return y
 
     def extract_dialect_features(self, y):
-        """Ekstraksi fitur MFCC + Delta + Delta2 saja (konsisten dimensi)"""
         yt, _ = librosa.effects.trim(y, top_db=25)
         
-        # Normalisasi amplitude
         if np.max(np.abs(yt)) > 0:
             yt = yt / np.max(np.abs(yt))
         
-        # MFCC dengan 26 koefisien
         mfcc = librosa.feature.mfcc(y=yt, sr=self.SR, n_mfcc=self.N_MFCC)
         d1 = librosa.feature.delta(mfcc)
         d2 = librosa.feature.delta(mfcc, order=2)
         
-        # Stack MFCC + Delta + Delta2 (total 78 fitur per frame)
         features = np.vstack([mfcc, d1, d2]).T
         
-        # Normalisasi z-score
         mu = np.mean(features, axis=0)
         sigma = np.std(features, axis=0) + 1e-8
         features_norm = (features - mu) / sigma
@@ -465,7 +486,6 @@ class AcousticCore:
         return features_norm, mfcc, yt
 
 def dtw_alignment(s1, s2, w_const):
-    """DTW dengan cosine distance"""
     n, m = len(s1), len(s2)
     w = max(w_const, abs(n - m))
     dp = np.full((n + 1, m + 1), np.inf)
@@ -610,8 +630,11 @@ def start_dialect_analysis():
     @st.cache_resource
     def boot_database():
         db_templates, db_waves = defaultdict(list), defaultdict(list)
+        db_audio_count = defaultdict(int)  # Menyimpan jumlah audio per label
+        
         for z in zip_files:
             label = z.stem.replace("Logat_", "").upper()
+            count = 0
             with tempfile.TemporaryDirectory() as td:
                 with zipfile.ZipFile(z, 'r') as zf:
                     zf.extractall(td)
@@ -623,13 +646,57 @@ def start_dialect_analysis():
                             if feats is not None and len(feats) > 0:
                                 db_templates[label].append(feats)
                                 db_waves[label].append(yt)
-        return db_templates, db_waves
+                                count += 1
+                db_audio_count[label] = count
+        return db_templates, db_waves, db_audio_count
 
-    db_templates, db_waves = boot_database()
+    db_templates, db_waves, db_audio_count = boot_database()
 
     if not db_templates:
         st.error("Dataset akustik tidak ditemukan. Harap sediakan arsip .zip di direktori kerja.")
         return
+
+    # ===== TAMPILAN INFORMASI DATABASE =====
+    st.markdown("""
+        <div class="section-header">
+            <span class="section-number">DATABASE</span>
+            <span class="section-title">Informasi Data Training</span>
+            <span class="section-line"></span>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # Menampilkan jumlah audio per logat dalam bentuk card
+    cols = st.columns(min(len(db_audio_count), 4))
+    for idx, (label, count) in enumerate(db_audio_count.items()):
+        col_idx = idx % 4
+        with cols[col_idx]:
+            st.markdown(f"""
+                <div class="db-info-card">
+                    <div class="db-info-label">LOGAT</div>
+                    <div class="db-info-value">{label}</div>
+                    <div class="db-info-count">📁 {count} file audio</div>
+                </div>
+            """, unsafe_allow_html=True)
+    
+    # Total statistik
+    total_audio = sum(db_audio_count.values())
+    total_labels = len(db_audio_count)
+    st.markdown(f"""
+        <div style="display:flex; gap:1rem; margin-bottom:1rem;">
+            <div style="background:rgba(56,189,248,0.08); padding:0.5rem 1rem; border-radius:8px;">
+                <span style="font-family:'DM Mono',monospace; font-size:0.6rem;">TOTAL LOGAT</span>
+                <span style="font-family:'Syne',sans-serif; font-size:1.2rem; font-weight:800; margin-left:8px;">{total_labels}</span>
+            </div>
+            <div style="background:rgba(56,189,248,0.08); padding:0.5rem 1rem; border-radius:8px;">
+                <span style="font-family:'DM Mono',monospace; font-size:0.6rem;">TOTAL SAMPEL AUDIO</span>
+                <span style="font-family:'Syne',sans-serif; font-size:1.2rem; font-weight:800; margin-left:8px;">{total_audio}</span>
+            </div>
+            <div style="background:rgba(56,189,248,0.08); padding:0.5rem 1rem; border-radius:8px;">
+                <span style="font-family:'DM Mono',monospace; font-size:0.6rem;">DIMENSI FITUR</span>
+                <span style="font-family:'Syne',sans-serif; font-size:1.2rem; font-weight:800; margin-left:8px;">78-D</span>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
     # Input
     st.markdown("""
@@ -687,9 +754,7 @@ def start_dialect_analysis():
             for label, templates in db_templates.items():
                 best_score = float('inf')
                 for t in templates:
-                    # Pastikan dimensi sama
                     if feats_in.shape[1] != t.shape[1]:
-                        # Potong ke dimensi terkecil jika tidak sama
                         min_dim = min(feats_in.shape[1], t.shape[1])
                         feats_in_trim = feats_in[:, :min_dim]
                         t_trim = t[:, :min_dim]
@@ -703,7 +768,6 @@ def start_dialect_analysis():
             winner = scores[0][1]
             confidence = (1 / (1 + scores[0][0])) * 100
             
-            # Cari indeks winner untuk waveform
             idx_winner = 0
             if winner in db_waves and len(db_waves[winner]) > 0:
                 idx_winner = 0
@@ -730,9 +794,9 @@ def start_dialect_analysis():
                     <div class="metric-sub">Jarak Cosine DTW</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-label">Dimensi Fitur</div>
-                    <div class="metric-value green">78-D</div>
-                    <div class="metric-sub">MFCC-26 + Delta + Delta2</div>
+                    <div class="metric-label">Database Aktif</div>
+                    <div class="metric-value green">{total_labels} Logat</div>
+                    <div class="metric-sub">{total_audio} Sampel Audio</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
