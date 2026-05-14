@@ -2,13 +2,10 @@ import streamlit as st
 import os
 import zipfile
 import tempfile
-import json
 import subprocess
 import sys
-import time
 from pathlib import Path
-from collections import defaultdict, Counter
-from datetime import datetime
+from collections import defaultdict
 
 import numpy as np
 import librosa
@@ -17,25 +14,15 @@ from plotly.subplots import make_subplots
 from scipy.spatial.distance import cdist
 from sklearn.preprocessing import StandardScaler
 
-# ==============================================================================
-# [1] GLOBAL SYSTEM ARCHITECTURE & DOCUMENTATION
-# ==============================================================================
-"""
-SISTEM ANALISIS AKUSTIK PROFESIONAL (RUMAH DATA)
-Arsitektur: Digital Signal Processing (DSP) Hybrid
-Metode: Dynamic Time Warping (DTW) + Mel-Frequency Cepstral Coefficients (MFCC)
-Versi: 3.7.0 - Standar Laboratorium Akustik
-"""
-
 st.set_page_config(
-    page_title="Advanced Acoustic Analytics",
+    page_title="Analisis Akustik Dialek",
     page_icon="🎙️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ==============================================================================
-# [2] UNIVERSAL AUDIO DECODER (AUTO-INJECTION)
+# UNIVERSAL AUDIO DECODER
 # ==============================================================================
 @st.cache_resource(show_spinner=False)
 def initialize_universal_engine():
@@ -43,7 +30,7 @@ def initialize_universal_engine():
         import pydub
         import imageio_ffmpeg
     except ImportError:
-        with st.spinner("🔧 Calibrating Deep-Audio Engine..."):
+        with st.spinner("Menyiapkan decoder audio..."):
             subprocess.check_call([sys.executable, "-m", "pip", "install", "pydub", "imageio-ffmpeg"])
             st.rerun()
     return True
@@ -51,14 +38,13 @@ def initialize_universal_engine():
 initialize_universal_engine()
 
 # ==============================================================================
-# [3] PREMIUM NAVY UI/UX ENGINE — REDESIGNED
+# NAVY UI/UX ENGINE
 # ==============================================================================
 def apply_professional_styles():
     st.markdown("""
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500;600&display=swap');
 
-        /* ── Root Variables ── */
         :root {
             --navy-900: #020812;
             --navy-800: #040d1e;
@@ -71,17 +57,13 @@ def apply_professional_styles():
             --accent-cyan: #22d3ee;
             --accent-emerald: #34d399;
             --accent-amber: #fbbf24;
-            --accent-rose: #fb7185;
             --text-primary: #e8f0fe;
             --text-secondary: #8eafd4;
             --text-muted: #4a6b9b;
             --border: rgba(56,189,248,0.15);
             --border-strong: rgba(56,189,248,0.35);
-            --shadow: 0 8px 32px rgba(2,8,18,0.7);
-            --shadow-lg: 0 20px 60px rgba(2,8,18,0.9);
         }
 
-        /* ── Global Reset ── */
         html, body, [class*="css"] {
             font-family: 'DM Sans', sans-serif;
             -webkit-font-smoothing: antialiased;
@@ -93,21 +75,16 @@ def apply_professional_styles():
                 radial-gradient(ellipse 40% 30% at 80% 90%, rgba(20,40,100,0.3) 0%, transparent 50%);
             color: var(--text-primary);
         }
-
-        /* ── Scanline texture overlay ── */
         .stApp::before {
             content: '';
             position: fixed; inset: 0; z-index: 0; pointer-events: none;
             background-image: repeating-linear-gradient(
-                0deg,
-                transparent,
-                transparent 2px,
-                rgba(56,189,248,0.015) 2px,
-                rgba(56,189,248,0.015) 4px
+                0deg, transparent, transparent 2px,
+                rgba(56,189,248,0.015) 2px, rgba(56,189,248,0.015) 4px
             );
         }
 
-        /* ── Hero Header ── */
+        /* Hero */
         .hero-header {
             position: relative;
             background: linear-gradient(160deg, var(--navy-700) 0%, var(--navy-800) 60%, var(--navy-900) 100%);
@@ -161,11 +138,11 @@ def apply_professional_styles():
             background: var(--accent-sky-dim);
             border: 1px solid var(--border);
             color: var(--accent-sky); font-family: 'DM Mono', monospace;
-            font-size: 0.65rem; padding: 5px 12px;
+            font-size: 0.65rem; padding: 5px 14px;
             border-radius: 4px; letter-spacing: 1px; text-transform: uppercase;
         }
 
-        /* ── Section Headers ── */
+        /* Section Headers */
         .section-header {
             display: flex; align-items: center; gap: 14px;
             margin: 2.5rem 0 1.2rem;
@@ -188,16 +165,17 @@ def apply_professional_styles():
             background: linear-gradient(90deg, var(--border) 0%, transparent 100%);
         }
 
-        /* ── Metric Cards ── */
+        /* Metric Cards — font clamp agar tidak overflow */
         .metrics-row { display: flex; gap: 16px; margin: 1.5rem 0 2rem; }
         .metric-card {
             flex: 1;
             background: linear-gradient(145deg, var(--navy-600) 0%, var(--navy-700) 100%);
-            padding: 1.8rem 1.5rem;
+            padding: 1.6rem 1.4rem;
             border-radius: 16px;
             border: 1px solid var(--border);
             position: relative; overflow: hidden;
             transition: border-color 0.3s ease, transform 0.3s ease, box-shadow 0.3s ease;
+            min-width: 0;
         }
         .metric-card::before {
             content: '';
@@ -212,45 +190,37 @@ def apply_professional_styles():
         }
         .metric-label {
             font-family: 'DM Mono', monospace;
-            font-size: 0.65rem; color: var(--text-muted);
+            font-size: 0.62rem; color: var(--text-muted);
             text-transform: uppercase; letter-spacing: 2px;
-            margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
-        }
-        .metric-label::before {
-            content: ''; width: 6px; height: 6px;
-            background: var(--accent-sky); border-radius: 50%;
-            display: inline-block;
+            margin-bottom: 10px;
         }
         .metric-value {
             font-family: 'Syne', sans-serif;
-            font-size: 2.4rem; font-weight: 800;
-            color: var(--accent-sky); line-height: 1;
+            font-size: clamp(1.2rem, 2.5vw, 2rem);
+            font-weight: 800;
+            color: var(--accent-sky); line-height: 1.15;
+            word-break: break-word;
+            overflow-wrap: anywhere;
         }
         .metric-value.green { color: var(--accent-emerald); }
         .metric-sub {
             font-family: 'DM Mono', monospace;
-            font-size: 0.65rem; color: var(--text-muted);
+            font-size: 0.62rem; color: var(--text-muted);
             margin-top: 8px;
         }
 
-        /* ── Analysis Box ── */
+        /* Analysis Box — tanpa icon */
         .analysis-box {
             background: linear-gradient(135deg, rgba(7,18,40,0.9) 0%, rgba(4,13,30,0.95) 100%);
-            padding: 1.6rem 1.8rem;
+            padding: 1.5rem 1.8rem;
             border-radius: 14px;
             border: 1px solid var(--border);
             border-left: 3px solid var(--accent-sky);
             margin: 1rem 0 2rem;
-            position: relative;
-        }
-        .analysis-box::before {
-            content: '⬡';
-            position: absolute; top: 1.2rem; right: 1.5rem;
-            color: var(--accent-sky-dim); font-size: 2rem; opacity: 0.3;
         }
         .analysis-title {
             font-family: 'Syne', sans-serif;
-            font-size: 0.8rem; font-weight: 700;
+            font-size: 0.78rem; font-weight: 700;
             color: var(--text-primary); text-transform: uppercase;
             letter-spacing: 1px; margin-bottom: 10px;
             padding-bottom: 10px; display: block;
@@ -263,7 +233,7 @@ def apply_professional_styles():
         }
         .analysis-text b { color: var(--accent-sky); font-weight: 600; }
 
-        /* ── Sidebar ── */
+        /* Sidebar */
         section[data-testid="stSidebar"] {
             background: var(--navy-800) !important;
             border-right: 1px solid var(--border) !important;
@@ -274,19 +244,16 @@ def apply_professional_styles():
             text-align: center; padding: 1.5rem 1rem 1rem;
             border-bottom: 1px solid var(--border); margin-bottom: 1.5rem;
         }
-        .sidebar-brand-icon {
-            font-size: 2rem; margin-bottom: 6px; display: block;
-        }
         .sidebar-brand-title {
             font-family: 'Syne', sans-serif;
-            font-size: 0.85rem; font-weight: 700;
+            font-size: 0.9rem; font-weight: 700;
             color: var(--text-primary); letter-spacing: 1px;
             text-transform: uppercase;
         }
         .sidebar-brand-sub {
             font-family: 'DM Mono', monospace;
             font-size: 0.6rem; color: var(--text-muted);
-            letter-spacing: 2px; margin-top: 3px;
+            letter-spacing: 2px; margin-top: 4px;
         }
 
         .status-card {
@@ -338,7 +305,7 @@ def apply_professional_styles():
             margin: 1.2rem 0 0.5rem; padding-left: 2px;
         }
 
-        /* ── Tabs ── */
+        /* Tabs — tanpa emoji */
         .stTabs [data-baseweb="tab-list"] {
             gap: 6px; background: transparent !important;
             border-bottom: 1px solid var(--border) !important;
@@ -351,8 +318,7 @@ def apply_professional_styles():
             border-radius: 8px 8px 0 0 !important;
             color: var(--text-muted) !important;
             font-family: 'DM Mono', monospace !important;
-            font-size: 0.72rem !important;
-            letter-spacing: 1.5px !important;
+            font-size: 0.72rem !important; letter-spacing: 1.5px !important;
             text-transform: uppercase !important;
             transition: all 0.2s ease !important;
         }
@@ -367,19 +333,13 @@ def apply_professional_styles():
             border-bottom: 2px solid var(--accent-sky) !important;
         }
 
-        /* ── Upload Zone ── */
+        /* Upload Zone */
         .upload-zone {
             background: var(--accent-sky-dim);
             border: 2px dashed var(--border-strong);
             border-radius: 16px; padding: 2rem;
             text-align: center; margin: 1rem 0;
-            transition: all 0.3s ease;
         }
-        .upload-zone:hover {
-            background: rgba(56,189,248,0.08);
-            border-color: var(--accent-sky);
-        }
-        .upload-icon { font-size: 2.5rem; display: block; margin-bottom: 10px; }
         .upload-title {
             font-family: 'Syne', sans-serif;
             font-size: 1rem; font-weight: 700; color: var(--text-primary);
@@ -390,7 +350,7 @@ def apply_professional_styles():
             margin-top: 6px; letter-spacing: 1px;
         }
 
-        /* ── Ranking Bar ── */
+        /* Ranking */
         .rank-item {
             display: flex; align-items: center; gap: 14px;
             padding: 0.8rem 1rem; margin-bottom: 8px;
@@ -418,7 +378,6 @@ def apply_professional_styles():
         .rank-bar-fill {
             height: 100%; border-radius: 3px;
             background: linear-gradient(90deg, var(--accent-sky), var(--accent-cyan));
-            transition: width 0.8s cubic-bezier(0.34,1.56,0.64,1);
         }
         .rank-bar-fill.top { background: linear-gradient(90deg, #38bdf8, #7dd3fc, #22d3ee); }
         .rank-pct {
@@ -428,7 +387,7 @@ def apply_professional_styles():
         }
         .rank-pct.top { color: var(--accent-cyan); }
 
-        /* ── Chart Container ── */
+        /* Chart Container */
         .chart-container {
             background: linear-gradient(135deg, var(--navy-700) 0%, var(--navy-800) 100%);
             border-radius: 16px; border: 1px solid var(--border);
@@ -436,17 +395,7 @@ def apply_professional_styles():
             overflow: hidden;
         }
 
-        /* ── Dividers ── */
-        hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
-
-        /* ── Input Widgets ── */
-        .stSlider [data-testid="stTickBar"] { color: var(--text-muted); }
-        .stSlider [data-baseweb="slider"] div[role="slider"] {
-            background: var(--accent-sky) !important;
-            border: 2px solid var(--navy-700) !important;
-        }
-
-        /* ── Buttons ── */
+        /* Buttons */
         .stButton > button {
             background: linear-gradient(135deg, var(--navy-500), var(--navy-600)) !important;
             border: 1px solid var(--border-strong) !important;
@@ -464,13 +413,7 @@ def apply_professional_styles():
             box-shadow: 0 4px 20px rgba(56,189,248,0.2) !important;
         }
 
-        /* ── Spinner ── */
-        .stSpinner { color: var(--accent-sky) !important; }
-
-        /* ── Alert / Error ── */
-        .stAlert { border-radius: 12px !important; border: 1px solid var(--border) !important; }
-
-        /* ── Footer ── */
+        /* Footer */
         .app-footer {
             text-align: center; padding: 2rem 0 1rem;
             border-top: 1px solid var(--border); margin-top: 3rem;
@@ -481,33 +424,16 @@ def apply_professional_styles():
             letter-spacing: 2px; text-transform: uppercase;
         }
 
-        /* ── Processing overlay animation ── */
-        @keyframes shimmer {
-            0% { background-position: -200% center; }
-            100% { background-position: 200% center; }
-        }
-        .processing-badge {
-            display: inline-flex; align-items: center; gap: 8px;
-            background: var(--accent-sky-dim);
-            border: 1px solid var(--border-strong);
-            border-radius: 20px; padding: 6px 16px;
-            font-family: 'DM Mono', monospace;
-            font-size: 0.7rem; color: var(--accent-sky);
-            letter-spacing: 1px; text-transform: uppercase;
-        }
-        .processing-badge span {
-            animation: pulse 1s ease-in-out infinite;
-        }
+        hr { border: none; border-top: 1px solid var(--border); margin: 2rem 0; }
     </style>
     """, unsafe_allow_html=True)
 
 apply_professional_styles()
 
 # ==============================================================================
-# [4] ACOUSTIC PROCESSING CORE
+# ACOUSTIC PROCESSING CORE
 # ==============================================================================
 class AcousticCore:
-    """Modul inti untuk decoding sinyal digital dan ekstraksi fitur logat."""
     def __init__(self, k, w):
         self.SR = 16000
         self.N_MFCC = 13
@@ -515,7 +441,6 @@ class AcousticCore:
         self.W = w
 
     def load_audio(self, path):
-        """Universal Audio Decoder dengan normalisasi bit-depth."""
         try:
             import pydub
             import imageio_ffmpeg
@@ -528,7 +453,6 @@ class AcousticCore:
             return y
 
     def extract_dialect_features(self, y):
-        """Ekstraksi Koefisien Cepstral dengan VAD internal terintegrasi."""
         yt, _ = librosa.effects.trim(y, top_db=25)
         mfcc = librosa.feature.mfcc(y=yt, sr=self.SR, n_mfcc=self.N_MFCC)
         d1 = librosa.feature.delta(mfcc)
@@ -539,7 +463,6 @@ class AcousticCore:
         return (features - mu) / sigma, mfcc, yt
 
 def dtw_alignment_engine(s1, s2, w_const):
-    """Kalkulasi Penyelarasan Waktu Dinamis menggunakan metrik Cosine."""
     n, m = len(s1), len(s2)
     w = max(w_const, abs(n - m))
     dp = np.full((n + 1, m + 1), np.inf); dp[0, 0] = 0.0
@@ -551,11 +474,9 @@ def dtw_alignment_engine(s1, s2, w_const):
     return dp[n, m] / (n + m)
 
 # ==============================================================================
-# [5] VISUALIZATION ENGINE — PREMIUM FACTORY
+# VISUALIZATION ENGINE
 # ==============================================================================
 class VizEngine:
-    """Modul untuk memfabrikasi grafik dengan palet warna Navy-Cyber."""
-
     @staticmethod
     def get_navy_scale():
         return [[0, '#020812'], [0.4, '#1a3a6e'], [1, '#38bdf8']]
@@ -566,34 +487,21 @@ class VizEngine:
 
     def _base_layout(self, h=400):
         return dict(
-            height=h,
-            template="plotly_dark",
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
+            height=h, template="plotly_dark",
+            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             font=dict(family='DM Mono, monospace', color='#8eafd4', size=11),
             margin=dict(l=10, r=10, t=30, b=10),
         )
 
     def plot_waveform(self, y_in, y_ref, label):
-        """Membuat perbandingan waveform dengan spasi vertikal yang rapi."""
-        fig = make_subplots(
-            rows=2, cols=1, vertical_spacing=0.22,
-            subplot_titles=("▶ Input Signal", f"▶ Reference: {label}")
-        )
-        fig.add_trace(go.Scatter(
-            y=y_in, line=dict(color='#38bdf8', width=1.2),
-            fill='tozeroy', fillcolor='rgba(56,189,248,0.06)',
-            name="Input"
-        ), row=1, col=1)
-        fig.add_trace(go.Scatter(
-            y=y_ref, line=dict(color='#22d3ee', width=1.2),
-            fill='tozeroy', fillcolor='rgba(34,211,238,0.05)',
-            name="Reference"
-        ), row=2, col=1)
+        fig = make_subplots(rows=2, cols=1, vertical_spacing=0.22,
+                            subplot_titles=("Sinyal Input (Audio Uji)", f"Referensi Database: {label}"))
+        fig.add_trace(go.Scatter(y=y_in, line=dict(color='#38bdf8', width=1.2),
+                                 fill='tozeroy', fillcolor='rgba(56,189,248,0.06)'), row=1, col=1)
+        fig.add_trace(go.Scatter(y=y_ref, line=dict(color='#22d3ee', width=1.2),
+                                 fill='tozeroy', fillcolor='rgba(34,211,238,0.05)'), row=2, col=1)
         layout = self._base_layout(440)
         layout.update(showlegend=False)
-        layout['xaxis2'] = dict(title=dict(text="Samples", font=dict(size=10)))
-        # Style annotation font
         fig.update_annotations(font=dict(size=11, color='#8eafd4', family='DM Mono, monospace'))
         fig.update_layout(**layout)
         fig.update_xaxes(gridcolor='rgba(56,189,248,0.07)', zerolinecolor='rgba(56,189,248,0.15)')
@@ -601,12 +509,9 @@ class VizEngine:
         return fig
 
     def plot_heatmap(self, data, labels):
-        """Matriks kemiripan dengan label dialek."""
         fig = go.Figure(data=go.Heatmap(
-            z=[data], x=labels,
-            colorscale=self.get_navy_scale(),
-            zmin=0, zmax=100,
-            text=[[f"{v:.0f}%" for v in data]],
+            z=[data], x=labels, colorscale=self.get_navy_scale(),
+            zmin=0, zmax=100, text=[[f"{v:.0f}%" for v in data]],
             texttemplate="%{text}",
             textfont=dict(family='DM Mono, monospace', size=12, color='#e8f0fe')
         ))
@@ -616,86 +521,78 @@ class VizEngine:
         return fig
 
     def plot_radar(self, labels, values):
-        """Distribusi probabilitas logat."""
         fig = go.Figure(data=go.Scatterpolar(
-            r=values + [values[0]],
-            theta=labels + [labels[0]],
-            fill='toself',
-            fillcolor='rgba(56,189,248,0.12)',
+            r=values + [values[0]], theta=labels + [labels[0]],
+            fill='toself', fillcolor='rgba(56,189,248,0.12)',
             line=dict(color='#38bdf8', width=2.5),
             marker=dict(color='#38bdf8', size=6)
         ))
         fig.update_layout(
             polar=dict(
                 bgcolor='rgba(7,18,40,0.6)',
-                radialaxis=dict(
-                    visible=True, range=[0, 100],
-                    gridcolor='rgba(56,189,248,0.12)',
-                    tickfont=dict(family='DM Mono, monospace', size=9, color='#4a6b9b')
-                ),
-                angularaxis=dict(
-                    tickfont=dict(family='DM Mono, monospace', size=10, color='#8eafd4'),
-                    gridcolor='rgba(56,189,248,0.08)'
-                )
+                radialaxis=dict(visible=True, range=[0, 100],
+                                gridcolor='rgba(56,189,248,0.12)',
+                                tickfont=dict(family='DM Mono, monospace', size=9, color='#4a6b9b')),
+                angularaxis=dict(tickfont=dict(family='DM Mono, monospace', size=10, color='#8eafd4'),
+                                 gridcolor='rgba(56,189,248,0.08)')
             ),
             **self._base_layout(340)
         )
         return fig
 
 # ==============================================================================
-# [6] ANALYTICAL PIPELINE EXECUTION
+# MAIN PIPELINE
 # ==============================================================================
 def start_dialect_analysis():
     zip_files = list(Path('.').glob('*.zip'))
 
-    # ── Sidebar ──────────────────────────────────────────────────────────────
+    # ── Sidebar ──
     with st.sidebar:
         st.markdown("""
             <div class="sidebar-brand">
-                <span class="sidebar-brand-icon">🎙️</span>
-                <div class="sidebar-brand-title">Acoustic Analytics</div>
-                <div class="sidebar-brand-sub">Pattern Recognition Lab</div>
+                <div class="sidebar-brand-title">Analisis Akustik</div>
+                <div class="sidebar-brand-sub">Laboratorium Pengenalan Pola</div>
             </div>
         """, unsafe_allow_html=True)
 
         st.markdown(f"""
             <div class="status-card">
-                <div class="status-label">Computational Status</div>
+                <div class="status-label">Status Komputasi</div>
                 <div class="status-main">{len(zip_files)}<span style="font-size:1rem;color:#4a6b9b;font-weight:400;"> logat</span></div>
-                <div class="status-badge">Engine Optimized</div>
+                <div class="status-badge">Mesin Aktif</div>
             </div>
         """, unsafe_allow_html=True)
 
-        st.markdown('<div class="sidebar-section-label">Parameter Configuration</div>', unsafe_allow_html=True)
-        k_val = st.slider("Classification Sensitivity (K)", 1, 15, 5)
-        w_val = st.slider("Window Constraint (W)", 20, 400, 120, step=10)
+        st.markdown('<div class="sidebar-section-label">Konfigurasi Parameter</div>', unsafe_allow_html=True)
+        k_val = st.slider("Sensitivitas Klasifikasi (K)", 1, 15, 5)
+        w_val = st.slider("Batas Jendela (W)", 20, 400, 120, step=10)
 
-        st.markdown('<div class="sidebar-section-label">System</div>', unsafe_allow_html=True)
-        if st.button("⟳ Reload Research Intelligence", use_container_width=True):
+        st.markdown('<div class="sidebar-section-label">Sistem</div>', unsafe_allow_html=True)
+        if st.button("Muat Ulang Database", use_container_width=True):
             st.cache_resource.clear()
             st.rerun()
 
         st.markdown("""
             <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid rgba(56,189,248,0.1);">
                 <div style="font-family:'DM Mono',monospace;font-size:0.58rem;color:#4a6b9b;letter-spacing:1.5px;text-align:center;">
-                    DTW + MFCC ENGINE<br>VERSION 3.7.0 STABLE
+                    DTW + MFCC ENGINE
                 </div>
             </div>
         """, unsafe_allow_html=True)
 
-    # ── Hero Header ───────────────────────────────────────────────────────────
+    # ── Hero Header ──
     st.markdown("""
         <div class="hero-header">
-            <div class="hero-eyebrow">Acoustic Intelligence System</div>
+            <div class="hero-eyebrow">Sistem Analisis Akustik</div>
             <h1 class="hero-title">
-                Dialect <span>Recognition</span><br>Laboratory
+                Laboratorium <span>Pengenalan</span><br>Dialek
             </h1>
-            <div class="hero-subtitle">Dynamic Time Warping · MFCC Feature Extraction · VAD Engine</div>
+            <div class="hero-subtitle">Dynamic Time Warping · Ekstraksi Fitur MFCC · Mesin VAD</div>
             <div class="hero-badges">
-                <span class="hero-badge">🔬 DSP Hybrid</span>
-                <span class="hero-badge">⚡ Cosine Distance</span>
-                <span class="hero-badge">🛡️ Universal Decoder</span>
-                <span class="hero-badge">📊 Multi-dialect DB</span>
+                <span class="hero-badge">DSP Hybrid</span>
+                <span class="hero-badge">Cosine Distance</span>
+                <span class="hero-badge">Universal Decoder</span>
+                <span class="hero-badge">Multi-Dialek</span>
             </div>
         </div>
     """, unsafe_allow_html=True)
@@ -719,57 +616,51 @@ def start_dialect_analysis():
                             db_waves[label].append(yt)
         return db_templates, db_waves
 
-    # ── Load DB ───────────────────────────────────────────────────────────────
     db_templates, db_waves = boot_database()
 
     if not db_templates:
-        st.error("⚠️ Missing Acoustic Datasets. Please provide .zip archives in the working directory.")
+        st.error("Dataset akustik tidak ditemukan. Harap sediakan arsip .zip di direktori kerja.")
         return
 
-    # ── Input Interface ───────────────────────────────────────────────────────
+    # ── Input ──
     st.markdown("""
         <div class="section-header">
             <span class="section-number">INPUT</span>
-            <span class="section-title">Audio Source Selection</span>
+            <span class="section-title">Pilih Sumber Audio</span>
             <span class="section-line"></span>
         </div>
     """, unsafe_allow_html=True)
 
-    tab_f, tab_r = st.tabs(["📁  File Upload", "🎤  Live Capture"])
+    tab_f, tab_r = st.tabs(["Unggah Berkas", "Rekam Langsung"])
     audio_stream, source_id = None, ""
 
     with tab_f:
         st.markdown("""
             <div class="upload-zone">
-                <span class="upload-icon">🎵</span>
-                <div class="upload-title">Upload Acoustic Data</div>
+                <div class="upload-title">Unggah Data Akustik</div>
                 <div class="upload-sub">WAV · MP3 · M4A · AAC · FLAC · OGG</div>
             </div>
         """, unsafe_allow_html=True)
-        u = st.file_uploader(
-            "Upload Acoustic Data",
-            type=['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg'],
-            label_visibility="collapsed"
-        )
+        u = st.file_uploader("Unggah Data Akustik",
+                              type=['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg'],
+                              label_visibility="collapsed")
         if u:
             audio_stream, source_id = u.read(), u.name
 
     with tab_r:
-        m = st.audio_input("Record Speech Pattern", label_visibility="collapsed")
+        m = st.audio_input("Rekam Pola Suara", label_visibility="collapsed")
         if m:
-            audio_stream, source_id = m.read(), "live_stream.wav"
+            audio_stream, source_id = m.read(), "rekaman_langsung.wav"
 
-    # ── Analysis Pipeline ─────────────────────────────────────────────────────
+    # ── Pipeline ──
     if audio_stream:
-        with st.spinner("Executing spectral decomposition..."):
+        with st.spinner("Memproses dekomposisi spektral..."):
             with tempfile.NamedTemporaryFile(suffix=Path(source_id).suffix, delete=False) as tmp:
-                tmp.write(audio_stream)
-                path = tmp.name
+                tmp.write(audio_stream); path = tmp.name
             y_raw = core.load_audio(path)
             feats_in, mfcc_in, y_in_t = core.extract_dialect_features(y_raw)
             os.remove(path)
 
-            # CALCULATION PIPELINE
             scores, h_vals, h_lbls = [], [], []
             for label, templates in db_templates.items():
                 for i, t in enumerate(templates):
@@ -782,11 +673,11 @@ def start_dialect_analysis():
             winner, idx_winner = scores[0][1], scores[0][2]
             conf = (1/(1+scores[0][0])*100)
 
-        # ── Results Metrics ───────────────────────────────────────────────────
+        # ── Hasil Klasifikasi ──
         st.markdown("""
             <div class="section-header">
-                <span class="section-number">RESULT</span>
-                <span class="section-title">Classification Output</span>
+                <span class="section-number">HASIL</span>
+                <span class="section-title">Keluaran Klasifikasi</span>
                 <span class="section-line"></span>
             </div>
         """, unsafe_allow_html=True)
@@ -794,28 +685,28 @@ def start_dialect_analysis():
         st.markdown(f"""
             <div class="metrics-row">
                 <div class="metric-card">
-                    <div class="metric-label">Dialect Identity</div>
+                    <div class="metric-label">Identitas Dialek</div>
                     <div class="metric-value">{winner}</div>
-                    <div class="metric-sub">Primary Classification</div>
+                    <div class="metric-sub">Klasifikasi Utama</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-label">Confidence Score</div>
+                    <div class="metric-label">Skor Kepercayaan</div>
                     <div class="metric-value">{conf:.1f}%</div>
-                    <div class="metric-sub">DTW Cosine Distance</div>
+                    <div class="metric-sub">Jarak Cosine DTW</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-label">VAD Engine</div>
-                    <div class="metric-value green">ACTIVE</div>
-                    <div class="metric-sub">Voice Activity Detected</div>
+                    <div class="metric-label">Mesin VAD</div>
+                    <div class="metric-value green">AKTIF</div>
+                    <div class="metric-sub">Aktivitas Suara Terdeteksi</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
 
-        # ── 1. Waveform ───────────────────────────────────────────────────────
+        # ── 1. Waveform ──
         st.markdown("""
             <div class="section-header">
                 <span class="section-number">01</span>
-                <span class="section-title">Temporal Signal Alignment Map</span>
+                <span class="section-title">Peta Penyelarasan Sinyal Temporal</span>
                 <span class="section-line"></span>
             </div>
         """, unsafe_allow_html=True)
@@ -824,16 +715,16 @@ def start_dialect_analysis():
         st.markdown('</div>', unsafe_allow_html=True)
         st.markdown(f"""
             <div class="analysis-box">
-                <span class="analysis-title">🔬 Temporal Consistency Analysis</span>
-                <p class="analysis-text">Waveform comparison maps the modulation synchronization between the input signal and master reference. Dialect <b>{winner}</b> dominates because it exhibits the most identical syllabic emphasis structure and speech rhythm. The Universal Decoder ensures signal integrity is maintained even for audio from compressed formats.</p>
+                <span class="analysis-title">Analisis Konsistensi Temporal</span>
+                <p class="analysis-text">Perbandingan waveform memetakan sinkronisasi modulasi antara sinyal input dan referensi master. Dialek <b>{winner}</b> mendominasi karena memiliki struktur penekanan suku kata dan ritme bicara yang paling identik. Decoder Universal memastikan integritas sinyal tetap terjaga meskipun audio berasal dari format terkompresi.</p>
             </div>
         """, unsafe_allow_html=True)
 
-        # ── 2. Heatmap ────────────────────────────────────────────────────────
+        # ── 2. Heatmap ──
         st.markdown("""
             <div class="section-header">
                 <span class="section-number">02</span>
-                <span class="section-title">Spectral Similarity Matrix</span>
+                <span class="section-title">Matriks Kemiripan Spektral</span>
                 <span class="section-line"></span>
             </div>
         """, unsafe_allow_html=True)
@@ -842,16 +733,16 @@ def start_dialect_analysis():
         st.markdown('</div>', unsafe_allow_html=True)
         st.markdown(f"""
             <div class="analysis-box">
-                <span class="analysis-title">🔬 Matrix Correlation Analysis</span>
-                <p class="analysis-text">The spectral similarity matrix maps MFCC feature correlations across the entire database using the Cyber-Navy palette. The bright blue area in the <b>{winner}</b> column indicates the most stable voice feature match density, minimizing cross-dialect classification bias.</p>
+                <span class="analysis-title">Analisis Korelasi Matriks</span>
+                <p class="analysis-text">Matriks kemiripan spektral memetakan korelasi fitur MFCC di seluruh database. Area berwarna biru cerah pada kolom <b>{winner}</b> mengindikasikan densitas kecocokan fitur suara yang paling stabil, meminimalkan bias klasifikasi lintas-dialek.</p>
             </div>
         """, unsafe_allow_html=True)
 
-        # ── 3 & 4. Radar + Spectral ───────────────────────────────────────────
+        # ── 3 & 4. Radar + Spektral ──
         st.markdown("""
             <div class="section-header">
                 <span class="section-number">03 · 04</span>
-                <span class="section-title">Probability Radar &amp; Acoustic Brightness</span>
+                <span class="section-title">Radar Probabilitas dan Kecerahan Akustik</span>
                 <span class="section-line"></span>
             </div>
         """, unsafe_allow_html=True)
@@ -865,20 +756,16 @@ def start_dialect_analysis():
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown(f"""
                 <div class="analysis-box">
-                    <span class="analysis-title">🔬 Radar Distribution Analysis</span>
-                    <p class="analysis-text">The probability radar shows vector pull skewed toward the <b>{winner}</b> axis, confirming unique vocal morphology that doesn't overlap with other dialects in the system.</p>
+                    <span class="analysis-title">Analisis Distribusi Radar</span>
+                    <p class="analysis-text">Radar distribusi menunjukkan tarikan vektor probabilitas yang condong ke arah sumbu <b>{winner}</b>. Hal ini mengonfirmasi morfologi vokal yang unik dan tidak tumpang tindih dengan dialek referensi lainnya dalam sistem.</p>
                 </div>
             """, unsafe_allow_html=True)
 
         with col_r:
             sc = librosa.feature.spectral_centroid(y=y_in_t, sr=16000)[0]
             fig_s = go.Figure()
-            fig_s.add_trace(go.Scatter(
-                y=sc,
-                line=dict(color='#fbbf24', width=1.8),
-                fill='tozeroy',
-                fillcolor='rgba(251,191,36,0.06)'
-            ))
+            fig_s.add_trace(go.Scatter(y=sc, line=dict(color='#fbbf24', width=1.8),
+                                       fill='tozeroy', fillcolor='rgba(251,191,36,0.06)'))
             layout_s = viz._base_layout(340)
             layout_s.update(margin=dict(l=0, r=0, t=10, b=0))
             fig_s.update_xaxes(gridcolor='rgba(56,189,248,0.07)')
@@ -889,25 +776,21 @@ def start_dialect_analysis():
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown(f"""
                 <div class="analysis-box">
-                    <span class="analysis-title">🔬 Acoustic Brightness Analysis</span>
-                    <p class="analysis-text">Spectral Centroid measures the frequency "center of mass". The brightness pattern of this test signal shows a high-frequency energy profile highly specific to dialect <b>{winner}</b>, reflecting the unique speech melody of that region.</p>
+                    <span class="analysis-title">Analisis Kecerahan Akustik</span>
+                    <p class="analysis-text">Spectral Centroid mengukur "pusat massa" frekuensi suara. Pola kecerahan pada sinyal uji ini menunjukkan profil energi frekuensi tinggi yang sangat spesifik bagi dialek <b>{winner}</b>, mencerminkan melodi bicara khas daerah tersebut dalam database.</p>
                 </div>
             """, unsafe_allow_html=True)
 
-        # ── 5. Delta MFCC ─────────────────────────────────────────────────────
+        # ── 5. Delta MFCC ──
         st.markdown("""
             <div class="section-header">
                 <span class="section-number">05</span>
-                <span class="section-title">Velocity of Speech Features (Delta MFCC)</span>
+                <span class="section-title">Kecepatan Fitur Bicara (Delta MFCC)</span>
                 <span class="section-line"></span>
             </div>
         """, unsafe_allow_html=True)
         delta = librosa.feature.delta(mfcc_in)
-        fig_d = go.Figure(data=go.Heatmap(
-            z=delta,
-            colorscale=viz.get_amber_scale(),
-            zmid=0
-        ))
+        fig_d = go.Figure(data=go.Heatmap(z=delta, colorscale=viz.get_amber_scale(), zmid=0))
         layout_d = viz._base_layout(280)
         layout_d.update(margin=dict(l=0, r=0, t=10, b=0))
         fig_d.update_layout(**layout_d)
@@ -916,16 +799,16 @@ def start_dialect_analysis():
         st.markdown('</div>', unsafe_allow_html=True)
         st.markdown(f"""
             <div class="analysis-box">
-                <span class="analysis-title">🔬 Dynamic Transition Analysis</span>
-                <p class="analysis-text">The Delta heatmap illustrates the speed of phoneme changes (tempo rhythm). The proximity on this chart shows your speech dynamics have an articulation velocity profile synchronized with the temporal characteristics of <b>{winner}</b>, reinforcing detection results from the tempo side.</p>
+                <span class="analysis-title">Analisis Transisi Dinamis</span>
+                <p class="analysis-text">Heatmap Delta menggambarkan kecepatan perubahan fonem (ritme tempo). Kedekatan pada grafik ini menunjukkan bahwa dinamika bicara Anda memiliki profil kecepatan artikulasi yang sinkron dengan karakteristik temporal dialek <b>{winner}</b>, memperkuat hasil deteksi dari sisi tempo.</p>
             </div>
         """, unsafe_allow_html=True)
 
-        # ── 6. Ranking ────────────────────────────────────────────────────────
+        # ── 6. Peringkat ──
         st.markdown("""
             <div class="section-header">
                 <span class="section-number">06</span>
-                <span class="section-title">Comprehensive Class Ranking</span>
+                <span class="section-title">Peringkat Kelas Komprehensif</span>
                 <span class="section-line"></span>
             </div>
         """, unsafe_allow_html=True)
@@ -940,11 +823,11 @@ def start_dialect_analysis():
             bar_class = "rank-bar-fill top" if is_top else "rank-bar-fill"
             item_class = "rank-item top" if is_top else "rank-item"
             pct_class = "rank-pct top" if is_top else "rank-pct"
-            crown = "👑 " if is_top else ""
+            label_top = "(Terbaik)" if is_top else ""
             st.markdown(f"""
                 <div class="{item_class}">
                     <div class="rank-num">#{rank_idx+1}</div>
-                    <div class="rank-name">{crown}{name}</div>
+                    <div class="rank-name">{name} <span style="font-size:0.65rem;color:#4a6b9b;font-weight:400;">{label_top}</span></div>
                     <div class="rank-bar-bg">
                         <div class="{bar_class}" style="width:{score:.1f}%"></div>
                     </div>
@@ -952,11 +835,11 @@ def start_dialect_analysis():
                 </div>
             """, unsafe_allow_html=True)
 
-    # ── Footer ────────────────────────────────────────────────────────────────
+    # ── Footer ──
     st.markdown("""
         <div class="app-footer">
             <div class="app-footer-text">
-                Acoustic Research Platform &copy; 2026 &nbsp;·&nbsp; Developed for High-Precision Research &nbsp;·&nbsp; DSP Hybrid V3.7.0
+                Platform Riset Akustik &copy; 2026 &nbsp;·&nbsp; Dikembangkan untuk Penelitian Presisi Tinggi
             </div>
         </div>
     """, unsafe_allow_html=True)
