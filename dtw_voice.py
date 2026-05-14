@@ -420,12 +420,12 @@ def apply_professional_styles():
 apply_professional_styles()
 
 # ==============================================================================
-# IMPROVED ACOUSTIC CORE - DENGAN MFCC LENGKAP
+# ACOUSTIC CORE DENGAN DIMENSI KONSISTEN
 # ==============================================================================
 class AcousticCore:
     def __init__(self, k, w):
         self.SR = 16000
-        self.N_MFCC = 20
+        self.N_MFCC = 13  # Standar MFCC
         self.K = k
         self.W = w
 
@@ -441,8 +441,8 @@ class AcousticCore:
             y, _ = librosa.load(path, sr=self.SR, mono=True)
             return y
 
-    def extract_dialect_features(self, y):
-        """Ekstraksi fitur MFCC lengkap dengan preprocessing"""
+    def extract_features(self, y):
+        """Ekstraksi fitur konsisten"""
         # Trim silent parts
         yt, _ = librosa.effects.trim(y, top_db=25)
         
@@ -453,24 +453,23 @@ class AcousticCore:
         if np.max(np.abs(yt)) > 0:
             yt = yt / (np.max(np.abs(yt)) + 1e-8)
         
-        # Ekstraksi MFCC dengan jumlah koefisien yang cukup
+        # MFCC
         mfcc = librosa.feature.mfcc(y=yt, sr=self.SR, n_mfcc=self.N_MFCC)
         
         # Delta dan Delta-Delta
         d1 = librosa.feature.delta(mfcc)
         d2 = librosa.feature.delta(mfcc, order=2)
         
-        # Stack features
+        # Stack features (13+13+13 = 39 fitur per frame)
         features = np.vstack([mfcc, d1, d2]).T
         
-        # Normalisasi global (bukan per-speaker)
-        scaler = StandardScaler()
-        features_norm = scaler.fit_transform(features)
-        
-        return features_norm, mfcc, yt
+        return features, yt
 
-def dtw_alignment(s1, s2, w_const):
-    """DTW dengan Euclidean distance"""
+# ==============================================================================
+# DTW ALIGNMENT
+# ==============================================================================
+def dtw_distance(s1, s2, w_const):
+    """DTW distance dengan Euclidean metric"""
     n, m = len(s1), len(s2)
     w = max(w_const, abs(n - m))
     dp = np.full((n + 1, m + 1), np.inf)
@@ -624,7 +623,7 @@ def start_dialect_analysis():
                     if f.suffix.lower() in ['.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg']:
                         y = core.load_audio(str(f))
                         if y is not None and len(y) > 0:
-                            feats, _, yt = core.extract_dialect_features(y)
+                            feats, yt = core.extract_features(y)
                             if feats is not None and len(feats) > 0:
                                 db_templates[label].append(feats)
                                 db_waves[label].append(yt)
@@ -680,50 +679,43 @@ def start_dialect_analysis():
                 os.remove(path)
                 return
                 
-            feats_in, mfcc_in, y_in_t = core.extract_dialect_features(y_raw)
+            feats_in, y_in_t = core.extract_features(y_raw)
             os.remove(path)
             
             if feats_in is None or len(feats_in) == 0:
                 st.error("Gagal mengekstrak fitur dari audio.")
                 return
 
-            # === SOLUSI: Gunakan mean centroid untuk klasifikasi ===
-            # Hitung centroid (rata-rata) dari setiap template database
-            # Ini lebih stabil daripada DTW per-frame
+            # Klasifikasi dengan DTW
+            all_distances = []
             
-            # Centroid untuk input
-            centroid_in = np.mean(feats_in, axis=0)
-            
-            # Hitung jarak ke centroid setiap label
-            label_centroids = {}
             for label, templates in db_templates.items():
-                all_centroids = []
-                for t in templates:
-                    centroid_t = np.mean(t, axis=0)
-                    all_centroids.append(centroid_t)
-                # Rata-rata centroid dari semua template di label ini
-                label_centroids[label] = np.mean(all_centroids, axis=0)
+                best_dist = float('inf')
+                best_idx = 0
+                
+                for idx, t in enumerate(templates):
+                    # Pastikan dimensi sama
+                    min_len = min(len(feats_in), len(t))
+                    feats_trim = feats_in[:min_len]
+                    t_trim = t[:min_len]
+                    
+                    dist = dtw_distance(feats_trim, t_trim, w_val)
+                    
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_idx = idx
+                
+                all_distances.append((best_dist, label, best_idx))
             
-            # Hitung jarak Euclidean ke setiap centroid label
-            scores = []
-            for label, centroid_label in label_centroids.items():
-                # Euclidean distance
-                dist = np.linalg.norm(centroid_in - centroid_label)
-                scores.append((dist, label))
+            # Urutkan dari jarak terkecil (paling mirip)
+            all_distances.sort(key=lambda x: x[0])
             
-            scores.sort(key=lambda x: x[0])
-            winner = scores[0][1]
-            confidence = (1 / (1 + scores[0][0])) * 100
+            winner = all_distances[0][1]
+            confidence = (1 / (1 + all_distances[0][0])) * 100
+            best_match_idx = all_distances[0][2]
             
-            # Cari template terbaik untuk visualisasi
-            best_template_idx = 0
-            best_template_dist = float('inf')
-            for idx, t in enumerate(db_templates[winner]):
-                centroid_t = np.mean(t, axis=0)
-                dist = np.linalg.norm(centroid_in - centroid_t)
-                if dist < best_template_dist:
-                    best_template_dist = dist
-                    best_template_idx = idx
+            # MFCC untuk visualisasi
+            mfcc_in = librosa.feature.mfcc(y=y_in_t, sr=16000, n_mfcc=13)
 
         # Hasil Klasifikasi
         st.markdown("""
@@ -744,20 +736,20 @@ def start_dialect_analysis():
                 <div class="metric-card">
                     <div class="metric-label">Skor Kepercayaan</div>
                     <div class="metric-value">{confidence:.1f}%</div>
-                    <div class="metric-sub">Centroid Euclidean Distance</div>
+                    <div class="metric-sub">Jarak Euclidean DTW</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-label">Metode</div>
-                    <div class="metric-value green">CENTROID</div>
-                    <div class="metric-sub">MFCC-20 + Delta + Delta2</div>
+                    <div class="metric-label">Mesin VAD</div>
+                    <div class="metric-value green">AKTIF</div>
+                    <div class="metric-sub">Aktivitas Suara Terdeteksi</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
 
-        # Tampilkan raw distances untuk debugging
-        with st.expander("Detail Jarak per Dialek (Debug)"):
-            for dist, label in scores:
-                st.write(f"{label}: {dist:.4f}")
+        # Debug distances
+        with st.expander("📊 Detail Jarak per Dialek (Debug)"):
+            for dist, label, _ in all_distances:
+                st.write(f"**{label}**: {dist:.6f}")
 
         # Waveform
         st.markdown("""
@@ -768,8 +760,8 @@ def start_dialect_analysis():
             </div>
         """, unsafe_allow_html=True)
         st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-        if winner in db_waves and len(db_waves[winner]) > best_template_idx:
-            st.plotly_chart(viz.plot_waveform(y_in_t, db_waves[winner][best_template_idx], winner), use_container_width=True)
+        if winner in db_waves and len(db_waves[winner]) > best_match_idx:
+            st.plotly_chart(viz.plot_waveform(y_in_t, db_waves[winner][best_match_idx], winner), use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
         st.markdown(f"""
             <div class="analysis-box">
@@ -789,7 +781,7 @@ def start_dialect_analysis():
         
         h_vals = []
         h_lbls = []
-        for dist, label in scores:
+        for dist, label, _ in all_distances:
             similarity = 1 / (1 + dist) * 100
             h_vals.append(similarity)
             h_lbls.append(label)
@@ -816,8 +808,8 @@ def start_dialect_analysis():
 
         with col_l:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-            u_labs = [lbl for _, lbl in scores]
-            v_radar = [1/(1+dist)*100 for dist, _ in scores]
+            u_labs = [lbl for _, lbl, _ in all_distances]
+            v_radar = [1/(1+dist)*100 for dist, _, _ in all_distances]
             st.plotly_chart(viz.plot_radar(u_labs, v_radar), use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown(f"""
@@ -879,7 +871,7 @@ def start_dialect_analysis():
             </div>
         """, unsafe_allow_html=True)
 
-        for rank_idx, (dist, name) in enumerate(scores):
+        for rank_idx, (dist, name, _) in enumerate(all_distances):
             similarity = 1 / (1 + dist) * 100
             is_top = rank_idx == 0
             bar_class = "rank-bar-fill top" if is_top else "rank-bar-fill"
