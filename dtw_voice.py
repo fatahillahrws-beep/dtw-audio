@@ -38,7 +38,7 @@ def initialize_universal_engine():
 initialize_universal_engine()
 
 # ==============================================================================
-# NAVY UI/UX ENGINE
+# NAVY UI/UX ENGINE (SAMA PERSIS DENGAN ASLI)
 # ==============================================================================
 def apply_professional_styles():
     st.markdown("""
@@ -420,12 +420,12 @@ def apply_professional_styles():
 apply_professional_styles()
 
 # ==============================================================================
-# ACOUSTIC CORE
+# ACOUSTIC CORE DENGAN DTW
 # ==============================================================================
 class AcousticCore:
     def __init__(self, k, w):
         self.SR = 16000
-        self.N_MFCC = 20
+        self.N_MFCC = 13
         self.K = k
         self.W = w
 
@@ -442,7 +442,7 @@ class AcousticCore:
             return y
 
     def extract_features(self, y):
-        """Ekstraksi fitur MFCC"""
+        """Ekstraksi fitur MFCC + Delta + Delta2"""
         # Trim silent parts
         yt, _ = librosa.effects.trim(y, top_db=25)
         
@@ -460,14 +460,34 @@ class AcousticCore:
         d1 = librosa.feature.delta(mfcc)
         d2 = librosa.feature.delta(mfcc, order=2)
         
-        # Stack features (20+20+20 = 60 fitur per frame)
+        # Stack features (13+13+13 = 39 fitur per frame)
         features = np.vstack([mfcc, d1, d2]).T
         
-        return features, yt
+        # Normalisasi z-score per fitur
+        scaler = StandardScaler()
+        features_norm = scaler.fit_transform(features)
+        
+        return features_norm, yt
 
-    def get_centroid(self, features):
-        """Mendapatkan centroid (rata-rata) dari fitur"""
-        return np.mean(features, axis=0)
+def dtw_distance(s1, s2, w):
+    """DTW dengan Euclidean distance"""
+    n, m = len(s1), len(s2)
+    window = max(w, abs(n - m))
+    
+    # Cost matrix
+    cost = cdist(s1, s2, metric='euclidean')
+    
+    # DP matrix
+    dp = np.full((n + 1, m + 1), np.inf)
+    dp[0, 0] = 0
+    
+    for i in range(1, n + 1):
+        for j in range(max(1, i - window), min(m, i + window) + 1):
+            dp[i, j] = cost[i-1, j-1] + min(dp[i-1, j], dp[i, j-1], dp[i-1, j-1])
+    
+    # Normalisasi dengan panjang path
+    path_len = n + m
+    return dp[n, m] / (path_len + 1e-8)
 
 # ==============================================================================
 # VISUALIZATION ENGINE
@@ -571,7 +591,7 @@ def start_dialect_analysis():
         st.markdown("""
             <div style="margin-top:2rem;padding-top:1.5rem;border-top:1px solid rgba(56,189,248,0.1);">
                 <div style="font-family:'DM Mono',monospace;font-size:0.58rem;color:#4a6b9b;letter-spacing:1.5px;text-align:center;">
-                    CENTROID + COSINE SIMILARITY
+                    DTW + MFCC ENGINE
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -583,10 +603,10 @@ def start_dialect_analysis():
             <h1 class="hero-title">
                 Laboratorium <span>Pengenalan</span><br>Dialek
             </h1>
-            <div class="hero-subtitle">Centroid-based · Cosine Similarity · MFCC-20</div>
+            <div class="hero-subtitle">Dynamic Time Warping · Ekstraksi Fitur MFCC · Mesin VAD</div>
             <div class="hero-badges">
-                <span class="hero-badge">Cosine Similarity</span>
-                <span class="hero-badge">Centroid Method</span>
+                <span class="hero-badge">DTW</span>
+                <span class="hero-badge">Euclidean Distance</span>
                 <span class="hero-badge">Universal Decoder</span>
                 <span class="hero-badge">Multi-Dialek</span>
             </div>
@@ -598,15 +618,9 @@ def start_dialect_analysis():
 
     @st.cache_resource
     def boot_database():
-        db_centroids = {}
-        db_waves = {}
-        db_centroids_per_file = defaultdict(list)  # Untuk visualisasi waveform terbaik
-        
+        db_templates, db_waves = defaultdict(list), defaultdict(list)
         for z in zip_files:
             label = z.stem.replace("Logat_", "").upper()
-            all_centroids = []
-            waves = []
-            
             with tempfile.TemporaryDirectory() as td:
                 with zipfile.ZipFile(z, 'r') as zf:
                     zf.extractall(td)
@@ -616,21 +630,13 @@ def start_dialect_analysis():
                         if y is not None and len(y) > 0:
                             feats, yt = core.extract_features(y)
                             if feats is not None and len(feats) > 0:
-                                centroid = core.get_centroid(feats)
-                                all_centroids.append(centroid)
-                                waves.append(yt)
-                                db_centroids_per_file[label].append(centroid)
-            
-            if all_centroids:
-                # Rata-rata semua centroid untuk label ini
-                db_centroids[label] = np.mean(all_centroids, axis=0)
-                db_waves[label] = waves
-        
-        return db_centroids, db_waves, db_centroids_per_file
+                                db_templates[label].append(feats)
+                                db_waves[label].append(yt)
+        return db_templates, db_waves
 
-    db_centroids, db_waves, db_centroids_per_file = boot_database()
+    db_templates, db_waves = boot_database()
 
-    if not db_centroids:
+    if not db_templates:
         st.error("Dataset akustik tidak ditemukan. Harap sediakan arsip .zip di direktori kerja.")
         return
 
@@ -685,40 +691,34 @@ def start_dialect_analysis():
                 st.error("Gagal mengekstrak fitur dari audio.")
                 return
 
-            # Hitung centroid input
-            centroid_in = core.get_centroid(feats_in)
+            # Klasifikasi dengan DTW
+            distances = []
             
-            # Hitung cosine similarity dengan setiap centroid label
-            similarities = []
-            for label, centroid_label in db_centroids.items():
-                # Cosine similarity antara dua vektor
-                dot = np.dot(centroid_in, centroid_label)
-                norm_in = np.linalg.norm(centroid_in)
-                norm_label = np.linalg.norm(centroid_label)
-                cos_sim = dot / (norm_in * norm_label + 1e-8)
-                # Clamp ke range 0-1
-                cos_sim = max(0, min(1, cos_sim))
-                similarities.append((cos_sim, label))
+            for label, templates in db_templates.items():
+                best_dist = float('inf')
+                best_idx = 0
+                
+                for idx, t in enumerate(templates):
+                    # Potong ke panjang minimum
+                    min_len = min(len(feats_in), len(t))
+                    f1 = feats_in[:min_len]
+                    f2 = t[:min_len]
+                    
+                    dist = dtw_distance(f1, f2, w_val)
+                    
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_idx = idx
+                
+                distances.append((best_dist, label, best_idx))
             
-            # Urutkan dari similarity tertinggi
-            similarities.sort(key=lambda x: x[0], reverse=True)
+            # Urutkan dari jarak terkecil (paling mirip)
+            distances.sort(key=lambda x: x[0])
             
-            winner = similarities[0][1]
-            confidence = similarities[0][0] * 100
-            
-            # Cari template terbaik untuk visualisasi waveform
-            best_match_idx = 0
-            best_match_sim = -1
-            if winner in db_centroids_per_file:
-                for idx, centroid_file in enumerate(db_centroids_per_file[winner]):
-                    dot = np.dot(centroid_in, centroid_file)
-                    norm_in = np.linalg.norm(centroid_in)
-                    norm_file = np.linalg.norm(centroid_file)
-                    sim = dot / (norm_in * norm_file + 1e-8)
-                    sim = max(0, min(1, sim))
-                    if sim > best_match_sim:
-                        best_match_sim = sim
-                        best_match_idx = idx
+            winner = distances[0][1]
+            # Konversi jarak ke similarity (0-100%)
+            confidence = max(0, min(100, (1 / (1 + distances[0][0])) * 100))
+            best_match_idx = distances[0][2]
             
             # MFCC untuk visualisasi
             mfcc_in = librosa.feature.mfcc(y=y_in_t, sr=16000, n_mfcc=13)
@@ -742,12 +742,12 @@ def start_dialect_analysis():
                 <div class="metric-card">
                     <div class="metric-label">Skor Kepercayaan</div>
                     <div class="metric-value">{confidence:.1f}%</div>
-                    <div class="metric-sub">Cosine Similarity</div>
+                    <div class="metric-sub">DTW Euclidean Distance</div>
                 </div>
                 <div class="metric-card">
-                    <div class="metric-label">Metode</div>
-                    <div class="metric-value green">CENTROID</div>
-                    <div class="metric-sub">MFCC-20 + Delta + Delta2</div>
+                    <div class="metric-label">Mesin VAD</div>
+                    <div class="metric-value green">AKTIF</div>
+                    <div class="metric-sub">Aktivitas Suara Terdeteksi</div>
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -782,8 +782,9 @@ def start_dialect_analysis():
         
         h_vals = []
         h_lbls = []
-        for sim, label in similarities:
-            h_vals.append(sim * 100)
+        for dist, label, _ in distances:
+            sim = max(0, min(100, (1 / (1 + dist)) * 100))
+            h_vals.append(sim)
             h_lbls.append(label)
         
         st.markdown('<div class="chart-container">', unsafe_allow_html=True)
@@ -792,7 +793,7 @@ def start_dialect_analysis():
         st.markdown(f"""
             <div class="analysis-box">
                 <span class="analysis-title">Analisis Korelasi Matriks</span>
-                <p class="analysis-text">Matriks kemiripan spektral memetakan korelasi fitur MFCC-20 di seluruh database. Area berwarna biru cerah pada kolom <b>{winner}</b> mengindikasikan densitas kecocokan fitur suara yang paling stabil, meminimalkan bias klasifikasi lintas-dialek.</p>
+                <p class="analysis-text">Matriks kemiripan spektral memetakan korelasi fitur MFCC di seluruh database. Area berwarna biru cerah pada kolom <b>{winner}</b> mengindikasikan densitas kecocokan fitur suara yang paling stabil, meminimalkan bias klasifikasi lintas-dialek.</p>
             </div>
         """, unsafe_allow_html=True)
 
@@ -808,8 +809,8 @@ def start_dialect_analysis():
 
         with col_l:
             st.markdown('<div class="chart-container">', unsafe_allow_html=True)
-            u_labs = [lbl for _, lbl in similarities]
-            v_radar = [sim * 100 for sim, _ in similarities]
+            u_labs = [lbl for _, lbl, _ in distances]
+            v_radar = [max(0, min(100, (1 / (1 + dist)) * 100)) for dist, _, _ in distances]
             st.plotly_chart(viz.plot_radar(u_labs, v_radar), use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown(f"""
@@ -871,8 +872,8 @@ def start_dialect_analysis():
             </div>
         """, unsafe_allow_html=True)
 
-        for rank_idx, (sim, name) in enumerate(similarities):
-            similarity_pct = sim * 100
+        for rank_idx, (dist, name, _) in enumerate(distances):
+            similarity_pct = max(0, min(100, (1 / (1 + dist)) * 100))
             is_top = rank_idx == 0
             bar_class = "rank-bar-fill top" if is_top else "rank-bar-fill"
             item_class = "rank-item top" if is_top else "rank-item"
