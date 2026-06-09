@@ -8,956 +8,819 @@ from collections import defaultdict
 
 import numpy as np
 import streamlit as st
-import librosa
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+# Optional imports are installed by requirements.txt. The small fallback below helps local runs.
+def ensure_package(package_name, import_name=None):
+    import_name = import_name or package_name
+    try:
+        __import__(import_name)
+    except ImportError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+
+for pkg, imp in [
+    ("librosa", "librosa"),
+    ("scikit-learn", "sklearn"),
+    ("scipy", "scipy"),
+    ("pydub", "pydub"),
+    ("imageio-ffmpeg", "imageio_ffmpeg"),
+    ("kaggle", "kaggle"),
+]:
+    try:
+        __import__(imp)
+    except ImportError:
+        pass
+
+import librosa
+from scipy.special import softmax
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
+try:
+    import pydub
+    import imageio_ffmpeg
+    pydub.AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
+except Exception:
+    pydub = None
 
 # ==============================================================================
-# STREAMLIT CONFIG
+# PAGE CONFIG
 # ==============================================================================
 st.set_page_config(
-    page_title="DialectAI · MFCC + GMM",
+    page_title="DialectLab GMM",
     page_icon="🎙️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
+SUPPORTED_AUDIO = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".wma", ".mp4"}
+LOCAL_DATA_DIR = Path("kaggle_dataset")
 
 # ==============================================================================
-# UNIVERSAL AUDIO DECODER
+# MODERN UI STYLE
 # ==============================================================================
-@st.cache_resource(show_spinner=False)
-def initialize_universal_engine():
-    """Menyiapkan decoder agar file mp3/m4a/aac/ogg/flac lebih aman dibaca."""
-    try:
-        import pydub  # noqa: F401
-        import imageio_ffmpeg  # noqa: F401
-    except ImportError:
-        with st.spinner("Menyiapkan decoder audio universal..."):
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "pydub", "imageio-ffmpeg"])
-            st.rerun()
-    return True
-
-
-initialize_universal_engine()
-
-
-# ==============================================================================
-# MODERN GLASS UI
-# ==============================================================================
-def apply_modern_styles():
+def apply_modern_style():
     st.markdown(
         """
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600;700&display=swap');
 
         :root {
-            --bg-0: #030712;
-            --bg-1: #07111f;
-            --bg-2: #0b1730;
-            --glass: rgba(15, 23, 42, 0.62);
-            --glass-strong: rgba(15, 23, 42, 0.86);
+            --bg0: #050816;
+            --bg1: #08111f;
+            --bg2: #0d1b2f;
+            --glass: rgba(13, 27, 47, 0.72);
+            --glass2: rgba(255,255,255,0.055);
             --line: rgba(148, 163, 184, 0.18);
-            --line-strong: rgba(99, 102, 241, 0.42);
-            --text: #f8fafc;
-            --sub: #94a3b8;
-            --muted: #64748b;
+            --line2: rgba(56, 189, 248, 0.35);
+            --txt: #e5f0ff;
+            --muted: #8aa4c5;
+            --muted2: #5f7697;
             --cyan: #22d3ee;
+            --sky: #38bdf8;
             --blue: #60a5fa;
-            --violet: #8b5cf6;
-            --pink: #ec4899;
+            --violet: #a78bfa;
             --green: #34d399;
             --amber: #fbbf24;
-            --red: #fb7185;
+            --rose: #fb7185;
         }
 
-        html, body, [class*="css"] {
-            font-family: 'Inter', sans-serif !important;
-            color: var(--text);
-        }
-
+        html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
         .stApp {
             background:
-                radial-gradient(circle at 18% 8%, rgba(139, 92, 246, 0.22), transparent 34%),
-                radial-gradient(circle at 88% 4%, rgba(34, 211, 238, 0.17), transparent 30%),
-                radial-gradient(circle at 58% 110%, rgba(96, 165, 250, 0.16), transparent 35%),
-                linear-gradient(135deg, #030712 0%, #08111f 42%, #020617 100%);
+                radial-gradient(circle at 10% 5%, rgba(34,211,238,0.18), transparent 25%),
+                radial-gradient(circle at 85% 20%, rgba(167,139,250,0.15), transparent 28%),
+                radial-gradient(circle at 50% 90%, rgba(56,189,248,0.10), transparent 35%),
+                linear-gradient(135deg, #050816 0%, #08111f 45%, #0b1020 100%);
+            color: var(--txt);
         }
-
-        .stApp::before {
-            content: '';
-            position: fixed;
-            inset: 0;
-            pointer-events: none;
-            background-image:
-                linear-gradient(rgba(148, 163, 184, 0.035) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(148, 163, 184, 0.035) 1px, transparent 1px);
-            background-size: 42px 42px;
-            mask-image: linear-gradient(to bottom, rgba(0,0,0,0.8), rgba(0,0,0,0.08));
-            z-index: 0;
-        }
-
-        .block-container {
-            padding-top: 2.2rem !important;
-        }
+        .block-container { padding-top: 2rem; padding-bottom: 3rem; }
 
         section[data-testid="stSidebar"] {
-            background: rgba(3, 7, 18, 0.88) !important;
-            border-right: 1px solid var(--line) !important;
+            background: rgba(2, 6, 23, 0.78) !important;
             backdrop-filter: blur(20px);
+            border-right: 1px solid var(--line);
         }
-
-        section[data-testid="stSidebar"] .block-container {
-            padding: 1.5rem 1.1rem !important;
-        }
+        section[data-testid="stSidebar"] .block-container { padding: 1.5rem 1rem; }
 
         .hero {
             position: relative;
-            overflow: hidden;
+            padding: 2.4rem 2.2rem;
             border: 1px solid var(--line);
-            background: linear-gradient(135deg, rgba(15,23,42,0.84), rgba(30,41,59,0.50));
             border-radius: 30px;
-            padding: 2.8rem 2.8rem;
-            box-shadow: 0 30px 90px rgba(0,0,0,0.38);
-            backdrop-filter: blur(24px);
-            margin-bottom: 2rem;
+            background: linear-gradient(145deg, rgba(15,23,42,0.85), rgba(8,17,31,0.65));
+            box-shadow: 0 24px 80px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.05);
+            overflow: hidden;
+            margin-bottom: 1.4rem;
         }
-
-        .hero::before {
+        .hero:before {
             content: '';
             position: absolute;
-            width: 460px;
-            height: 460px;
-            right: -150px;
-            top: -170px;
-            border-radius: 999px;
-            background: radial-gradient(circle, rgba(34,211,238,0.26), transparent 62%);
+            inset: -2px;
+            background: radial-gradient(circle at 80% 10%, rgba(34,211,238,0.22), transparent 34%),
+                        radial-gradient(circle at 5% 90%, rgba(167,139,250,0.18), transparent 35%);
+            z-index: 0;
         }
-
-        .hero::after {
-            content: '';
-            position: absolute;
-            width: 360px;
-            height: 360px;
-            left: -120px;
-            bottom: -160px;
-            border-radius: 999px;
-            background: radial-gradient(circle, rgba(139,92,246,0.24), transparent 64%);
-        }
-
-        .hero-content { position: relative; z-index: 2; }
-
+        .hero > div { position: relative; z-index: 1; }
         .eyebrow {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            color: var(--cyan);
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.72rem;
-            letter-spacing: 0.18em;
+            color: var(--cyan);
+            font-size: .72rem;
+            letter-spacing: .23rem;
             text-transform: uppercase;
-            padding: 7px 12px;
-            border: 1px solid rgba(34,211,238,0.26);
-            border-radius: 999px;
-            background: rgba(34,211,238,0.08);
-            margin-bottom: 1rem;
+            font-weight: 700;
+            margin-bottom: .7rem;
         }
-
-        .hero-title {
-            font-size: clamp(2.25rem, 5vw, 4.8rem);
+        .title {
+            font-size: clamp(2.25rem, 5vw, 4.7rem);
+            line-height: .95;
+            letter-spacing: -0.08em;
             font-weight: 900;
-            letter-spacing: -0.065em;
-            line-height: 0.94;
             margin: 0;
         }
-
-        .gradient-text {
-            background: linear-gradient(90deg, #22d3ee, #60a5fa, #8b5cf6, #ec4899);
+        .title span {
+            background: linear-gradient(90deg, var(--cyan), var(--blue), var(--violet));
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
-            background-clip: text;
         }
-
-        .hero-subtitle {
-            max-width: 760px;
-            color: var(--sub);
+        .subtitle {
+            color: var(--muted);
+            max-width: 780px;
+            margin-top: 1rem;
             font-size: 1rem;
-            line-height: 1.75;
-            margin-top: 1.1rem;
+            line-height: 1.7;
+        }
+        .badge-row { display:flex; flex-wrap:wrap; gap:.55rem; margin-top:1.15rem; }
+        .badge {
+            font-family:'JetBrains Mono', monospace;
+            font-size:.68rem;
+            letter-spacing:.08rem;
+            text-transform:uppercase;
+            color:#cffafe;
+            padding:.45rem .75rem;
+            border-radius:999px;
+            border:1px solid rgba(34,211,238,.25);
+            background:rgba(34,211,238,.08);
         }
 
-        .chip-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-top: 1.4rem;
-        }
-
-        .chip {
-            color: #dbeafe;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.68rem;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            padding: 8px 12px;
-            border-radius: 999px;
-            background: rgba(96,165,250,0.10);
-            border: 1px solid rgba(96,165,250,0.22);
-        }
-
-        .panel {
-            background: linear-gradient(135deg, rgba(15,23,42,0.72), rgba(15,23,42,0.40));
+        .glass-card {
             border: 1px solid var(--line);
+            background: linear-gradient(145deg, rgba(15,23,42,.72), rgba(13,27,47,.54));
             border-radius: 22px;
             padding: 1.2rem;
-            box-shadow: 0 20px 55px rgba(0,0,0,0.24);
-            backdrop-filter: blur(18px);
+            box-shadow: 0 18px 50px rgba(0,0,0,.24), inset 0 1px 0 rgba(255,255,255,.05);
             margin-bottom: 1rem;
         }
-
+        .mini-label {
+            font-family:'JetBrains Mono', monospace;
+            color:var(--muted2);
+            text-transform:uppercase;
+            letter-spacing:.15rem;
+            font-size:.68rem;
+            font-weight:700;
+            margin-bottom:.35rem;
+        }
+        .metric-big {
+            color:var(--txt);
+            font-weight:900;
+            font-size:clamp(1.35rem, 2.5vw, 2.3rem);
+            letter-spacing:-.04em;
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
+        .metric-accent {
+            background: linear-gradient(90deg, var(--cyan), var(--blue));
+            -webkit-background-clip:text;
+            -webkit-text-fill-color:transparent;
+        }
         .section-title {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin: 1.9rem 0 1rem;
+            display:flex;
+            align-items:center;
+            gap:.75rem;
+            margin:1.7rem 0 .8rem;
         }
-
-        .section-title .num {
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--cyan);
-            font-size: 0.72rem;
-            padding: 5px 9px;
-            background: rgba(34,211,238,0.09);
-            border: 1px solid rgba(34,211,238,0.20);
-            border-radius: 8px;
+        .section-no {
+            font-family:'JetBrains Mono', monospace;
+            font-size:.7rem;
+            color:var(--cyan);
+            border:1px solid rgba(34,211,238,.25);
+            background:rgba(34,211,238,.08);
+            border-radius:999px;
+            padding:.35rem .55rem;
         }
-
-        .section-title .txt {
-            font-size: 0.92rem;
-            font-weight: 800;
-            letter-spacing: 0.1em;
-            text-transform: uppercase;
+        .section-text {
+            font-weight:850;
+            font-size:1rem;
+            letter-spacing:-.02em;
+            text-transform:uppercase;
         }
-
-        .section-title .line {
-            flex: 1;
-            height: 1px;
-            background: linear-gradient(90deg, var(--line), transparent);
+        .rank-line {
+            display:flex;
+            align-items:center;
+            gap:.9rem;
+            padding:.85rem 1rem;
+            border:1px solid var(--line);
+            border-radius:16px;
+            background:rgba(15,23,42,.48);
+            margin-bottom:.55rem;
         }
-
-        .metric-grid {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 14px;
-            margin: 1rem 0 1.4rem;
-        }
-
-        .metric {
-            position: relative;
-            overflow: hidden;
-            padding: 1.15rem 1.05rem;
-            min-height: 128px;
-            border-radius: 20px;
-            border: 1px solid var(--line);
-            background: linear-gradient(145deg, rgba(15,23,42,0.86), rgba(30,41,59,0.52));
-        }
-
-        .metric::before {
-            content: '';
-            position: absolute;
-            inset: 0;
-            background: radial-gradient(circle at 82% 12%, rgba(34,211,238,0.12), transparent 36%);
-            pointer-events: none;
-        }
-
-        .metric-label {
-            color: var(--muted);
-            font-family: 'JetBrains Mono', monospace;
-            text-transform: uppercase;
-            letter-spacing: 0.13em;
-            font-size: 0.62rem;
-            margin-bottom: 0.85rem;
-            position: relative;
-        }
-
-        .metric-value {
-            font-size: clamp(1.25rem, 2.8vw, 2rem);
-            font-weight: 900;
-            letter-spacing: -0.04em;
-            color: var(--text);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            position: relative;
-        }
-
-        .metric-sub {
-            color: var(--sub);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.66rem;
-            margin-top: 0.65rem;
-            position: relative;
-        }
-
-        .winner-card {
-            border-radius: 26px;
-            border: 1px solid rgba(34,211,238,0.28);
-            padding: 1.6rem;
-            background:
-                radial-gradient(circle at 88% 20%, rgba(34,211,238,0.15), transparent 32%),
-                radial-gradient(circle at 10% 100%, rgba(139,92,246,0.18), transparent 36%),
-                linear-gradient(135deg, rgba(15,23,42,0.86), rgba(30,41,59,0.48));
-            box-shadow: 0 30px 70px rgba(0,0,0,0.28);
-            margin-bottom: 1rem;
-        }
-
-        .winner-label {
-            color: var(--cyan);
-            font-family: 'JetBrains Mono', monospace;
-            text-transform: uppercase;
-            font-size: 0.72rem;
-            letter-spacing: 0.18em;
-        }
-
-        .winner-name {
-            font-size: clamp(2.3rem, 6vw, 4.4rem);
-            font-weight: 900;
-            letter-spacing: -0.07em;
-            line-height: 1;
-            margin-top: 0.4rem;
-        }
-
-        .winner-desc {
-            color: var(--sub);
-            line-height: 1.65;
-            margin-top: 0.8rem;
-        }
-
-        .note-box {
-            padding: 1rem 1.15rem;
-            border-radius: 18px;
-            border: 1px solid rgba(148,163,184,0.16);
-            background: rgba(15,23,42,0.62);
-            color: var(--sub);
-            line-height: 1.7;
-            margin: 0.8rem 0 1.2rem;
-        }
-
-        .rank-item {
-            display: grid;
-            grid-template-columns: 42px 150px 1fr 82px;
-            gap: 12px;
-            align-items: center;
-            padding: 0.92rem 1rem;
-            border-radius: 16px;
-            border: 1px solid var(--line);
-            background: rgba(15,23,42,0.64);
-            margin-bottom: 9px;
-        }
-
-        .rank-item.top {
-            border-color: rgba(34,211,238,0.36);
-            background: linear-gradient(90deg, rgba(34,211,238,0.11), rgba(139,92,246,0.08));
-        }
-
-        .rank-num {
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--muted);
-            font-size: 0.78rem;
-        }
-
-        .rank-name {
-            font-weight: 800;
-            letter-spacing: -0.02em;
-        }
-
-        .bar-bg {
-            height: 9px;
-            background: rgba(51,65,85,0.7);
-            border-radius: 999px;
-            overflow: hidden;
-        }
-
-        .bar-fill {
-            height: 100%;
-            border-radius: 999px;
-            background: linear-gradient(90deg, var(--cyan), var(--blue), var(--violet));
-        }
-
-        .rank-pct {
-            text-align: right;
-            font-family: 'JetBrains Mono', monospace;
-            color: var(--cyan);
-            font-weight: 600;
-        }
-
-        .sidebar-logo {
-            text-align: center;
-            padding: 1.1rem 0.8rem 1.4rem;
-            border-bottom: 1px solid var(--line);
-            margin-bottom: 1.2rem;
-        }
-
-        .sidebar-logo .brand {
-            font-size: 1rem;
-            font-weight: 900;
-            letter-spacing: -0.04em;
-        }
-
-        .sidebar-logo .subbrand {
-            margin-top: 0.25rem;
-            color: var(--muted);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.62rem;
-            letter-spacing: 0.14em;
-            text-transform: uppercase;
-        }
-
-        .sidebar-stat {
-            border-radius: 18px;
-            padding: 1rem;
-            background: linear-gradient(135deg, rgba(34,211,238,0.10), rgba(139,92,246,0.08));
-            border: 1px solid rgba(34,211,238,0.18);
-            margin-bottom: 1.1rem;
-        }
-
-        .sidebar-stat .label {
-            color: var(--muted);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.62rem;
-            letter-spacing: 0.14em;
-            text-transform: uppercase;
-        }
-
-        .sidebar-stat .value {
-            font-size: 2.25rem;
-            font-weight: 900;
-            color: var(--cyan);
-            line-height: 1;
-            margin-top: 0.5rem;
-        }
-
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 8px;
-            border-bottom: 1px solid var(--line);
-        }
-
-        .stTabs [data-baseweb="tab"] {
-            border-radius: 999px !important;
-            padding: 9px 18px !important;
-            background: rgba(15,23,42,0.54) !important;
-            border: 1px solid rgba(148,163,184,0.16) !important;
-            color: var(--sub) !important;
-            font-family: 'JetBrains Mono', monospace !important;
-            font-size: 0.72rem !important;
-            letter-spacing: 0.08em !important;
-            text-transform: uppercase !important;
-        }
-
-        .stTabs [aria-selected="true"] {
-            color: var(--cyan) !important;
-            border-color: rgba(34,211,238,0.35) !important;
-            background: rgba(34,211,238,0.10) !important;
-        }
+        .rank-line.top { border-color:rgba(34,211,238,.45); background:rgba(34,211,238,.07); }
+        .rank-num { font-family:'JetBrains Mono', monospace; color:var(--muted2); width:2rem; text-align:right; }
+        .rank-name { font-weight:800; min-width:110px; }
+        .bar-bg { height:9px; background:rgba(148,163,184,.13); border-radius:999px; flex:1; overflow:hidden; }
+        .bar-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, var(--blue), var(--cyan)); }
+        .rank-score { font-family:'JetBrains Mono', monospace; color:var(--cyan); min-width:72px; text-align:right; font-weight:700; }
 
         .stButton > button {
-            border-radius: 12px !important;
-            border: 1px solid rgba(34,211,238,0.35) !important;
-            background: linear-gradient(135deg, rgba(34,211,238,0.18), rgba(139,92,246,0.16)) !important;
-            color: #e0f2fe !important;
-            font-family: 'JetBrains Mono', monospace !important;
-            text-transform: uppercase !important;
-            letter-spacing: 0.08em !important;
-            font-size: 0.72rem !important;
+            border-radius:14px !important;
+            border:1px solid rgba(34,211,238,.35) !important;
+            background:linear-gradient(135deg, rgba(34,211,238,.14), rgba(96,165,250,.10)) !important;
+            color:#e0f2fe !important;
+            font-family:'JetBrains Mono', monospace !important;
+            text-transform:uppercase !important;
+            letter-spacing:.08rem !important;
+            font-weight:700 !important;
         }
-
-        .footer {
-            text-align: center;
-            color: var(--muted);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.62rem;
-            letter-spacing: 0.13em;
-            text-transform: uppercase;
-            border-top: 1px solid var(--line);
-            padding: 1.5rem 0 0.4rem;
-            margin-top: 2rem;
+        .stButton > button:hover { border-color:rgba(34,211,238,.7) !important; box-shadow:0 0 24px rgba(34,211,238,.12); }
+        .stTabs [data-baseweb="tab-list"] { gap:.5rem; }
+        .stTabs [data-baseweb="tab"] {
+            border-radius:14px !important;
+            background:rgba(15,23,42,.55) !important;
+            border:1px solid var(--line) !important;
+            color:var(--muted) !important;
+            font-family:'JetBrains Mono', monospace !important;
+            font-size:.72rem !important;
+            letter-spacing:.08rem !important;
+            text-transform:uppercase !important;
         }
-
-        @media (max-width: 1000px) {
-            .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            .rank-item { grid-template-columns: 36px 110px 1fr 70px; }
+        .stTabs [aria-selected="true"] {
+            color:#cffafe !important;
+            background:rgba(34,211,238,.10) !important;
+            border-color:rgba(34,211,238,.35) !important;
+        }
+        div[data-testid="stFileUploader"] {
+            border:1px dashed rgba(34,211,238,.35);
+            border-radius:20px;
+            padding:1rem;
+            background:rgba(34,211,238,.045);
         }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-
-apply_modern_styles()
-
+apply_modern_style()
 
 # ==============================================================================
-# ACOUSTIC FEATURE CORE: MFCC + DELTA + DELTA-DELTA
+# KAGGLE DATA HANDLER
 # ==============================================================================
-class AcousticFeatureCore:
-    def __init__(self, sr=16000, n_mfcc=20, max_duration=6.0, top_db=25):
-        self.SR = int(sr)
-        self.N_MFCC = int(n_mfcc)
-        self.MAX_DURATION = float(max_duration)
-        self.TOP_DB = int(top_db)
+def setup_kaggle_credentials():
+    """Use Streamlit secrets first, then environment variables, then local kaggle.json."""
+    try:
+        if "KAGGLE_USERNAME" in st.secrets and "KAGGLE_KEY" in st.secrets:
+            os.environ["KAGGLE_USERNAME"] = st.secrets["KAGGLE_USERNAME"]
+            os.environ["KAGGLE_KEY"] = st.secrets["KAGGLE_KEY"]
+    except Exception:
+        pass
 
-    def load_audio(self, path):
-        """Membaca audio memakai pydub lebih dahulu, lalu fallback ke librosa."""
+
+def download_kaggle_dataset(dataset_slug: str, target_dir: str = "kaggle_dataset") -> Path:
+    """Download and unzip a Kaggle dataset if target folder does not already contain audio or zip data."""
+    target_path = Path(target_dir)
+    target_path.mkdir(parents=True, exist_ok=True)
+
+    existing_audio = [p for p in target_path.rglob("*") if p.suffix.lower() in SUPPORTED_AUDIO]
+    existing_zip = list(target_path.rglob("*.zip"))
+    if existing_audio or existing_zip:
+        return target_path
+
+    if not dataset_slug or dataset_slug.strip() in {"username/nama-dataset", ""}:
+        return target_path
+
+    setup_kaggle_credentials()
+
+    try:
+        subprocess.check_call([
+            sys.executable, "-m", "kaggle", "datasets", "download",
+            "-d", dataset_slug,
+            "-p", str(target_path),
+            "--unzip",
+        ])
+    except Exception as e:
+        st.error(
+            "Gagal mengunduh dataset dari Kaggle. Pastikan KAGGLE_USERNAME, "
+            "KAGGLE_KEY, dan dataset slug sudah benar.\n\n"
+            f"Detail error: {e}"
+        )
+
+    return target_path
+
+
+def extract_all_nested_zips(base_dir: Path) -> Path:
+    """Extract ZIP files recursively. Keeps original zip files, extracts to folders with the same stem."""
+    base_dir = Path(base_dir)
+    extracted_marker = base_dir / ".extracted_ok"
+    if extracted_marker.exists():
+        return base_dir
+
+    zip_files = list(base_dir.rglob("*.zip"))
+    for z in zip_files:
+        extract_dir = z.parent / z.stem
+        extract_dir.mkdir(parents=True, exist_ok=True)
         try:
-            import pydub
-            import imageio_ffmpeg
-            pydub.AudioSegment.converter = imageio_ffmpeg.get_ffmpeg_exe()
-            audio = pydub.AudioSegment.from_file(path).set_frame_rate(self.SR).set_channels(1)
-            samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
-            denom = float(1 << (8 * audio.sample_width - 1))
-            return samples / max(denom, 1.0)
-        except Exception:
-            y, _ = librosa.load(path, sr=self.SR, mono=True)
-            return y.astype(np.float32)
+            with zipfile.ZipFile(z, "r") as zf:
+                zf.extractall(extract_dir)
+        except Exception as e:
+            st.warning(f"ZIP tidak bisa diekstrak: {z.name}. Error: {e}")
 
-    def clean_audio(self, y):
-        """Trim silence, potong durasi, dan normalisasi amplitudo."""
+    try:
+        extracted_marker.touch()
+    except Exception:
+        pass
+    return base_dir
+
+
+def find_dataset_root(base_dir: Path) -> Path:
+    """
+    Find a directory containing at least 2 label folders such as:
+    Data_training/Logat Batak, Data_training/Logat Jawa, etc.
+    """
+    base_dir = Path(base_dir)
+    candidates = []
+
+    for folder in [base_dir] + [p for p in base_dir.rglob("*") if p.is_dir()]:
+        subdirs = [p for p in folder.iterdir() if p.is_dir()]
+        label_like = [p for p in subdirs if p.name.lower().startswith("logat")]
+        audio_subdirs = []
+        for p in subdirs:
+            has_audio = any(a.suffix.lower() in SUPPORTED_AUDIO for a in p.rglob("*"))
+            if has_audio:
+                audio_subdirs.append(p)
+
+        if len(label_like) >= 2:
+            candidates.append((folder, len(label_like) + len(audio_subdirs)))
+        elif len(audio_subdirs) >= 2:
+            candidates.append((folder, len(audio_subdirs)))
+
+    if candidates:
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0]
+
+    return base_dir
+
+
+def clean_label(folder_name: str) -> str:
+    label = folder_name.strip()
+    for prefix in ["Logat_", "Logat-", "Logat ", "logat_", "logat-", "logat "]:
+        if label.startswith(prefix):
+            label = label[len(prefix):]
+    return label.replace("_", " ").replace("-", " ").upper().strip()
+
+# ==============================================================================
+# AUDIO CORE: MFCC + DELTA + DELTA-DELTA
+# ==============================================================================
+class AcousticGMMCore:
+    def __init__(self, sr=16000, n_mfcc=20, max_seconds=6, top_db=25):
+        self.sr = int(sr)
+        self.n_mfcc = int(n_mfcc)
+        self.max_seconds = int(max_seconds)
+        self.top_db = int(top_db)
+
+    def load_audio(self, path: str):
+        """Universal audio loader using pydub first, librosa fallback."""
+        try:
+            if pydub is not None:
+                audio = pydub.AudioSegment.from_file(path).set_frame_rate(self.sr).set_channels(1)
+                samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+                denom = float(1 << (8 * audio.sample_width - 1))
+                y = samples / max(denom, 1.0)
+                return y.astype(np.float32)
+        except Exception:
+            pass
+
+        try:
+            y, _ = librosa.load(path, sr=self.sr, mono=True)
+            return y.astype(np.float32)
+        except Exception:
+            return None
+
+    def preprocess_audio(self, y):
         if y is None or len(y) == 0:
             return None
 
-        max_samples = int(self.SR * self.MAX_DURATION)
-        if len(y) > max_samples:
-            y = y[:max_samples]
+        max_len = self.sr * self.max_seconds
+        if len(y) > max_len:
+            y = y[:max_len]
 
-        yt, _ = librosa.effects.trim(y, top_db=self.TOP_DB)
-        if len(yt) < int(self.SR * 0.3):
-            yt = y
+        try:
+            yt, _ = librosa.effects.trim(y, top_db=self.top_db)
+            if len(yt) >= int(0.3 * self.sr):
+                y = yt
+        except Exception:
+            pass
 
-        peak = np.max(np.abs(yt)) if len(yt) > 0 else 0
+        peak = np.max(np.abs(y)) if len(y) else 0
         if peak > 0:
-            yt = yt / (peak + 1e-8)
-
-        return yt.astype(np.float32)
+            y = y / (peak + 1e-8)
+        return y.astype(np.float32)
 
     def extract_frame_features(self, y):
         """
-        Menghasilkan fitur frame-level untuk GMM.
-        Bentuk output: (T, 3*n_mfcc), terdiri atas MFCC, Delta, Delta-Delta.
+        Output: frame-level matrix with shape (T, 3*n_mfcc).
+        GMM is trained on frame distributions, not one vector per audio.
         """
-        yt = self.clean_audio(y)
-        if yt is None or len(yt) == 0:
+        y = self.preprocess_audio(y)
+        if y is None or len(y) < int(0.2 * self.sr):
             return None, None, None
 
         mfcc = librosa.feature.mfcc(
-            y=yt,
-            sr=self.SR,
-            n_mfcc=self.N_MFCC,
+            y=y,
+            sr=self.sr,
+            n_mfcc=self.n_mfcc,
             n_fft=1024,
             hop_length=256,
             win_length=1024,
         )
 
-        # Normalisasi per koefisien seperti pendekatan dosen: remove mean + scale maksimum absolut.
-        mfcc_norm = mfcc.copy()
-        for i in range(mfcc_norm.shape[0]):
-            mfcc_norm[i] -= np.mean(mfcc_norm[i])
-            mx = np.max(np.abs(mfcc_norm[i]))
-            if mx > 0:
-                mfcc_norm[i] /= (mx + 1e-8)
+        # Cepstral mean and variance normalization per coefficient
+        mfcc = mfcc - np.mean(mfcc, axis=1, keepdims=True)
+        std = np.std(mfcc, axis=1, keepdims=True) + 1e-8
+        mfcc = mfcc / std
 
-        delta = librosa.feature.delta(mfcc_norm)
-        delta2 = librosa.feature.delta(mfcc_norm, order=2)
-        frame_features = np.vstack([mfcc_norm, delta, delta2]).T
-        return frame_features.astype(np.float32), mfcc_norm, yt
+        delta = librosa.feature.delta(mfcc)
+        delta2 = librosa.feature.delta(mfcc, order=2)
+        feat = np.vstack([mfcc, delta, delta2]).T
 
-    def extract_summary_features(self, frames):
-        """Ringkasan statistik untuk visualisasi atau model tambahan."""
-        return np.concatenate([
-            np.mean(frames, axis=0),
-            np.std(frames, axis=0),
-            np.median(frames, axis=0),
-            np.percentile(frames, 25, axis=0),
-            np.percentile(frames, 75, axis=0),
-        ])
+        # Remove invalid rows
+        feat = feat[np.all(np.isfinite(feat), axis=1)]
+        if len(feat) == 0:
+            return None, y, mfcc
+        return feat.astype(np.float32), y, mfcc
 
-
-# ==============================================================================
-# GMM CLASSIFIER ENGINE
-# ==============================================================================
-class GMMDialectClassifier:
-    def __init__(self, n_components=8, covariance_type="diag", random_state=42, reg_covar=1e-4):
-        self.n_components = int(n_components)
-        self.covariance_type = covariance_type
-        self.random_state = random_state
-        self.reg_covar = float(reg_covar)
-        self.scaler = StandardScaler()
-        self.models = {}
-        self.label_frame_counts = {}
-        self.label_file_counts = {}
-        self.pca = None
-        self.pca_points = None
-
-    def fit(self, frame_bank, file_count_bank):
-        """
-        frame_bank: dict[label] = list[array(T, F)]
-        Setiap dialek dilatih sebagai satu distribusi GMM tersendiri.
-        """
-        all_frames = []
-        for label, items in frame_bank.items():
-            for x in items:
-                if x is not None and len(x) > 0:
-                    all_frames.append(x)
-
-        if not all_frames:
-            raise ValueError("Tidak ada fitur audio yang valid untuk melatih GMM.")
-
-        all_frames_stack = np.vstack(all_frames)
-        self.scaler.fit(all_frames_stack)
-
-        self.models = {}
-        self.label_frame_counts = {}
-        self.label_file_counts = dict(file_count_bank)
-
-        for label, items in frame_bank.items():
-            frames = np.vstack([x for x in items if x is not None and len(x) > 0])
-            frames_scaled = self.scaler.transform(frames)
-            n_comp = min(self.n_components, max(1, len(frames_scaled) // 20))
-            n_comp = max(1, n_comp)
-
-            model = GaussianMixture(
-                n_components=n_comp,
-                covariance_type=self.covariance_type,
-                random_state=self.random_state,
-                reg_covar=self.reg_covar,
-                max_iter=300,
-                n_init=3,
-                init_params="kmeans",
-            )
-            model.fit(frames_scaled)
-            self.models[label] = model
-            self.label_frame_counts[label] = len(frames_scaled)
-
-        # PCA hanya untuk visualisasi peta fitur database.
+    def spectral_centroid(self, y):
         try:
-            max_sample = min(6000, len(all_frames_stack))
-            rng = np.random.default_rng(self.random_state)
-            idx = rng.choice(len(all_frames_stack), size=max_sample, replace=False)
-            sample_scaled = self.scaler.transform(all_frames_stack[idx])
-            self.pca = PCA(n_components=2, random_state=self.random_state)
-            self.pca.fit(sample_scaled)
+            sc = librosa.feature.spectral_centroid(y=y, sr=self.sr)[0]
+            return sc
         except Exception:
-            self.pca = None
-
-        return self
-
-    def predict_log_likelihood(self, frames):
-        """Menghitung average log-likelihood tiap dialek."""
-        x_scaled = self.scaler.transform(frames)
-        scores = []
-        for label, model in self.models.items():
-            avg_ll = float(model.score(x_scaled))
-            scores.append((label, avg_ll))
-        scores.sort(key=lambda z: z[1], reverse=True)
-        return scores
-
-    @staticmethod
-    def likelihood_to_probability(scores, temperature=1.0):
-        """
-        Mengubah log-likelihood menjadi probabilitas relatif dengan softmax.
-        Ini bukan probabilitas mutlak, tetapi confidence relatif antar kelas dialek.
-        """
-        labels = [s[0] for s in scores]
-        vals = np.array([s[1] for s in scores], dtype=np.float64)
-        vals = vals / max(float(temperature), 1e-6)
-        vals = vals - np.max(vals)
-        probs = np.exp(vals)
-        probs = probs / (np.sum(probs) + 1e-12)
-        return list(zip(labels, probs, [s[1] for s in scores]))
-
-    def predict(self, frames, temperature=1.0):
-        scores = self.predict_log_likelihood(frames)
-        ranked = self.likelihood_to_probability(scores, temperature=temperature)
-        ranked.sort(key=lambda z: z[1], reverse=True)
-        return ranked
-
+            return np.array([])
 
 # ==============================================================================
-# VISUALIZATION ENGINE
+# DATABASE + GMM MODEL
 # ==============================================================================
-class VizEngine:
-    @staticmethod
-    def base_layout(height=380, margin=None):
-        if margin is None:
-            margin = dict(l=10, r=10, t=35, b=10)
-        return dict(
-            height=height,
+def collect_label_audio_files(dataset_root: Path):
+    dataset_root = Path(dataset_root)
+    label_map = defaultdict(list)
+
+    if not dataset_root.exists():
+        return label_map
+
+    # Preferred structure: root / Logat Batak / audio files
+    for label_folder in dataset_root.iterdir():
+        if not label_folder.is_dir():
+            continue
+        audio_files = [p for p in label_folder.rglob("*") if p.suffix.lower() in SUPPORTED_AUDIO]
+        if audio_files:
+            label_map[clean_label(label_folder.name)].extend(audio_files)
+
+    # Fallback: audio files directly under nested folders, use parent folder as label.
+    if not label_map:
+        for audio_file in dataset_root.rglob("*"):
+            if audio_file.suffix.lower() in SUPPORTED_AUDIO:
+                label_map[clean_label(audio_file.parent.name)].append(audio_file)
+
+    return label_map
+
+
+@st.cache_resource(show_spinner=False)
+def train_gmm_database(
+    dataset_slug: str,
+    use_kaggle: bool,
+    local_dataset_path: str,
+    sr: int,
+    n_mfcc: int,
+    max_seconds: int,
+    n_components: int,
+    covariance_type: str,
+    random_state: int,
+):
+    core = AcousticGMMCore(sr=sr, n_mfcc=n_mfcc, max_seconds=max_seconds)
+
+    if use_kaggle:
+        base_path = download_kaggle_dataset(dataset_slug, str(LOCAL_DATA_DIR))
+    else:
+        base_path = Path(local_dataset_path) if local_dataset_path else Path(".")
+
+    # Also support local zip in working directory, e.g. Data_training.zip
+    if not use_kaggle and base_path.is_file() and base_path.suffix.lower() == ".zip":
+        tmp_dir = Path("local_dataset_extracted")
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(base_path, "r") as zf:
+            zf.extractall(tmp_dir)
+        base_path = tmp_dir
+
+    base_path = extract_all_nested_zips(base_path)
+    dataset_root = find_dataset_root(base_path)
+    label_files = collect_label_audio_files(dataset_root)
+
+    if len(label_files) < 2:
+        return {
+            "ok": False,
+            "message": f"Dataset belum terbaca. Root yang dicari: {dataset_root}",
+            "dataset_root": str(dataset_root),
+            "models": {},
+            "scaler": None,
+            "waves": {},
+            "mfcc_preview": {},
+            "file_counts": {},
+            "feature_dim": 0,
+            "total_frames": 0,
+        }
+
+    raw_features_by_label = defaultdict(list)
+    waves_by_label = defaultdict(list)
+    mfcc_preview = {}
+    file_counts = {}
+
+    progress = st.progress(0, text="Membaca audio training...")
+    all_files = [(label, f) for label, files in label_files.items() for f in files]
+    total = max(len(all_files), 1)
+
+    for i, (label, audio_file) in enumerate(all_files, start=1):
+        y = core.load_audio(str(audio_file))
+        feat, yt, mfcc = core.extract_frame_features(y)
+        if feat is not None and len(feat) >= 5:
+            raw_features_by_label[label].append(feat)
+            if len(waves_by_label[label]) < 3:
+                waves_by_label[label].append(yt)
+            if label not in mfcc_preview and mfcc is not None:
+                mfcc_preview[label] = mfcc
+        progress.progress(i / total, text=f"Membaca training: {label} ({i}/{total})")
+    progress.empty()
+
+    labels = sorted(raw_features_by_label.keys())
+    if len(labels) < 2:
+        return {
+            "ok": False,
+            "message": "Audio berhasil ditemukan, tetapi label valid kurang dari 2.",
+            "dataset_root": str(dataset_root),
+            "models": {},
+            "scaler": None,
+            "waves": dict(waves_by_label),
+            "mfcc_preview": mfcc_preview,
+            "file_counts": {},
+            "feature_dim": 0,
+            "total_frames": 0,
+        }
+
+    file_counts = {label: len(raw_features_by_label[label]) for label in labels}
+    all_train = np.vstack([np.vstack(raw_features_by_label[label]) for label in labels])
+
+    scaler = StandardScaler()
+    all_train_scaled = scaler.fit_transform(all_train)
+
+    models = {}
+    start_idx = 0
+    for label in labels:
+        x_label = np.vstack(raw_features_by_label[label])
+        end_idx = start_idx + len(x_label)
+        x_scaled = all_train_scaled[start_idx:end_idx]
+        start_idx = end_idx
+
+        # GMM components cannot exceed available samples.
+        comp = min(int(n_components), max(1, len(x_scaled) // 10))
+        comp = max(1, comp)
+
+        gmm = GaussianMixture(
+            n_components=comp,
+            covariance_type=covariance_type,
+            reg_covar=1e-5,
+            max_iter=250,
+            n_init=2,
+            random_state=random_state,
+        )
+        gmm.fit(x_scaled)
+        models[label] = gmm
+
+    return {
+        "ok": True,
+        "message": "Model GMM berhasil dilatih.",
+        "dataset_root": str(dataset_root),
+        "models": models,
+        "scaler": scaler,
+        "waves": dict(waves_by_label),
+        "mfcc_preview": mfcc_preview,
+        "file_counts": file_counts,
+        "feature_dim": int(all_train.shape[1]),
+        "total_frames": int(all_train.shape[0]),
+    }
+
+
+def classify_with_gmm(test_features, models, scaler, temperature=1.0):
+    x = scaler.transform(test_features)
+    labels = list(models.keys())
+    scores = []
+
+    for label in labels:
+        # Average log-likelihood per frame.
+        ll = models[label].score(x)
+        scores.append(ll)
+
+    scores = np.array(scores, dtype=float)
+
+    # Stable confidence. Temperature controls sharpness.
+    temp = max(float(temperature), 1e-6)
+    calibrated = (scores - np.max(scores)) / temp
+    probs = softmax(calibrated)
+
+    ranking = sorted(
+        [(label, float(score), float(prob)) for label, score, prob in zip(labels, scores, probs)],
+        key=lambda z: z[2],
+        reverse=True,
+    )
+    return ranking
+
+# ==============================================================================
+# VISUALIZATION
+# ==============================================================================
+def plot_waveform(y, title="Waveform"):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(y=y, mode="lines", line=dict(width=1.2), fill="tozeroy"))
+    fig.update_layout(
+        title=title,
+        height=300,
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=20, r=20, t=45, b=20),
+        font=dict(color="#8aa4c5", family="JetBrains Mono"),
+    )
+    fig.update_xaxes(gridcolor="rgba(148,163,184,0.12)")
+    fig.update_yaxes(gridcolor="rgba(148,163,184,0.12)")
+    return fig
+
+
+def plot_mfcc_heatmap(mfcc, title="MFCC Heatmap"):
+    fig = go.Figure(data=go.Heatmap(z=mfcc, colorscale="Turbo"))
+    fig.update_layout(
+        title=title,
+        height=330,
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=20, r=20, t=45, b=20),
+        font=dict(color="#8aa4c5", family="JetBrains Mono"),
+    )
+    return fig
+
+
+def plot_radar(ranking):
+    labels = [x[0] for x in ranking]
+    vals = [x[2] * 100 for x in ranking]
+    if len(vals) == 0:
+        vals = [0]
+        labels = [""]
+    fig = go.Figure(data=go.Scatterpolar(
+        r=vals + [vals[0]],
+        theta=labels + [labels[0]],
+        fill="toself",
+        line=dict(width=3),
+    ))
+    fig.update_layout(
+        height=380,
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        polar=dict(
+            bgcolor="rgba(15,23,42,0.2)",
+            radialaxis=dict(visible=True, range=[0, 100], gridcolor="rgba(148,163,184,0.16)"),
+            angularaxis=dict(gridcolor="rgba(148,163,184,0.12)"),
+        ),
+        margin=dict(l=20, r=20, t=30, b=30),
+        font=dict(color="#8aa4c5", family="JetBrains Mono"),
+    )
+    return fig
+
+
+def plot_score_bar(ranking):
+    labels = [r[0] for r in ranking][::-1]
+    probs = [r[2] * 100 for r in ranking][::-1]
+    fig = go.Figure(go.Bar(x=probs, y=labels, orientation="h", text=[f"{v:.1f}%" for v in probs], textposition="auto"))
+    fig.update_layout(
+        title="Confidence Ranking",
+        height=max(300, 55 * len(labels)),
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=20, r=20, t=45, b=25),
+        font=dict(color="#8aa4c5", family="JetBrains Mono"),
+        xaxis=dict(range=[0, 100]),
+    )
+    fig.update_xaxes(gridcolor="rgba(148,163,184,0.12)")
+    fig.update_yaxes(gridcolor="rgba(148,163,184,0.12)")
+    return fig
+
+
+def plot_spectral_centroid(sc):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(y=sc, mode="lines", line=dict(width=2), fill="tozeroy"))
+    fig.update_layout(
+        title="Spectral Centroid",
+        height=300,
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=20, r=20, t=45, b=20),
+        font=dict(color="#8aa4c5", family="JetBrains Mono"),
+    )
+    fig.update_xaxes(gridcolor="rgba(148,163,184,0.12)")
+    fig.update_yaxes(gridcolor="rgba(148,163,184,0.12)")
+    return fig
+
+
+def plot_pca_projection(test_features, database_result, winner):
+    try:
+        scaler = database_result["scaler"]
+        models = database_result["models"]
+        if scaler is None or not models:
+            return None
+
+        # Use GMM means as class centers, plus sampled test frames.
+        class_points = []
+        class_labels = []
+        for label, gmm in models.items():
+            means_original_space = scaler.inverse_transform(gmm.means_)
+            class_points.append(means_original_space)
+            class_labels.extend([label] * len(means_original_space))
+        class_points = np.vstack(class_points)
+
+        take = min(180, len(test_features))
+        idx = np.linspace(0, len(test_features) - 1, take).astype(int)
+        test_points = test_features[idx]
+
+        all_points = np.vstack([class_points, test_points])
+        pca = PCA(n_components=2, random_state=42)
+        z = pca.fit_transform(all_points)
+        z_class = z[: len(class_points)]
+        z_test = z[len(class_points):]
+
+        fig = go.Figure()
+        unique_labels = sorted(set(class_labels))
+        for lab in unique_labels:
+            mask = np.array(class_labels) == lab
+            fig.add_trace(go.Scatter(
+                x=z_class[mask, 0],
+                y=z_class[mask, 1],
+                mode="markers+text",
+                name=f"GMM {lab}",
+                text=[lab] * np.sum(mask),
+                textposition="top center",
+                marker=dict(size=12, symbol="diamond", line=dict(width=1)),
+            ))
+        fig.add_trace(go.Scatter(
+            x=z_test[:, 0],
+            y=z_test[:, 1],
+            mode="markers",
+            name="Audio Uji",
+            marker=dict(size=6, opacity=0.5),
+        ))
+        fig.update_layout(
+            title=f"PCA Projection: Audio Uji vs GMM Centers ({winner})",
+            height=420,
             template="plotly_dark",
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(family="JetBrains Mono, monospace", color="#94a3b8", size=11),
-            margin=margin,
+            margin=dict(l=20, r=20, t=45, b=20),
+            font=dict(color="#8aa4c5", family="JetBrains Mono"),
         )
-
-    @staticmethod
-    def colorscale_cyan_violet():
-        return [[0, "#020617"], [0.35, "#1e1b4b"], [0.70, "#2563eb"], [1, "#22d3ee"]]
-
-    @staticmethod
-    def colorscale_amber():
-        return [[0, "#020617"], [0.45, "#1f2937"], [1, "#fbbf24"]]
-
-    def waveform(self, y):
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            y=y,
-            mode="lines",
-            line=dict(color="#22d3ee", width=1.3),
-            fill="tozeroy",
-            fillcolor="rgba(34,211,238,0.08)",
-        ))
-        fig.update_layout(**self.base_layout(270))
-        fig.update_xaxes(showgrid=True, gridcolor="rgba(148,163,184,0.08)")
-        fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.08)")
+        fig.update_xaxes(gridcolor="rgba(148,163,184,0.12)")
+        fig.update_yaxes(gridcolor="rgba(148,163,184,0.12)")
         return fig
-
-    def mfcc_heatmap(self, mfcc):
-        fig = go.Figure(data=go.Heatmap(
-            z=mfcc,
-            colorscale=self.colorscale_cyan_violet(),
-            colorbar=dict(title="MFCC"),
-        ))
-        fig.update_layout(**self.base_layout(340))
-        fig.update_xaxes(title="Frame")
-        fig.update_yaxes(title="Koefisien")
-        return fig
-
-    def likelihood_bars(self, ranked):
-        labels = [x[0] for x in ranked][::-1]
-        probs = [x[1] * 100 for x in ranked][::-1]
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=probs,
-            y=labels,
-            orientation="h",
-            marker=dict(
-                color=probs,
-                colorscale=[[0, "#312e81"], [0.5, "#2563eb"], [1, "#22d3ee"]],
-                line=dict(color="rgba(255,255,255,0.14)", width=1),
-            ),
-            text=[f"{p:.1f}%" for p in probs],
-            textposition="outside",
-            hovertemplate="%{y}<br>Confidence relatif: %{x:.2f}%<extra></extra>",
-        ))
-        fig.update_layout(**self.base_layout(360, margin=dict(l=10, r=60, t=30, b=10)))
-        fig.update_xaxes(range=[0, max(100, max(probs) * 1.15)], title="Confidence relatif (%)", gridcolor="rgba(148,163,184,0.08)")
-        fig.update_yaxes(gridcolor="rgba(148,163,184,0.04)")
-        return fig
-
-    def radar(self, ranked):
-        labels = [x[0] for x in ranked]
-        probs = [x[1] * 100 for x in ranked]
-        if len(labels) == 1:
-            labels = labels + labels
-            probs = probs + probs
-        fig = go.Figure(data=go.Scatterpolar(
-            r=probs + [probs[0]],
-            theta=labels + [labels[0]],
-            fill="toself",
-            fillcolor="rgba(34,211,238,0.14)",
-            line=dict(color="#22d3ee", width=2.5),
-            marker=dict(color="#60a5fa", size=6),
-        ))
-        fig.update_layout(
-            polar=dict(
-                bgcolor="rgba(15,23,42,0.35)",
-                radialaxis=dict(visible=True, range=[0, 100], gridcolor="rgba(148,163,184,0.12)"),
-                angularaxis=dict(gridcolor="rgba(148,163,184,0.10)"),
-            ),
-            **self.base_layout(360),
-        )
-        return fig
-
-    def spectral_centroid(self, y, sr):
-        sc = librosa.feature.spectral_centroid(y=y, sr=sr)[0]
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            y=sc,
-            line=dict(color="#fbbf24", width=1.8),
-            fill="tozeroy",
-            fillcolor="rgba(251,191,36,0.08)",
-            name="Spectral Centroid",
-        ))
-        fig.update_layout(**self.base_layout(300))
-        fig.update_xaxes(title="Frame", gridcolor="rgba(148,163,184,0.08)")
-        fig.update_yaxes(title="Hz", gridcolor="rgba(148,163,184,0.08)")
-        return fig
-
-    def pca_projection(self, classifier, frames, label_pred):
-        if classifier.pca is None:
-            return None
-        scaled = classifier.scaler.transform(frames)
-        pts = classifier.pca.transform(scaled)
-        max_pts = min(len(pts), 900)
-        pts = pts[:max_pts]
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=pts[:, 0],
-            y=pts[:, 1],
-            mode="markers",
-            marker=dict(size=6, color="#22d3ee", opacity=0.68, line=dict(width=0)),
-            name=f"Audio uji → {label_pred}",
-        ))
-        fig.update_layout(**self.base_layout(300))
-        fig.update_xaxes(title="PC1", gridcolor="rgba(148,163,184,0.08)")
-        fig.update_yaxes(title="PC2", gridcolor="rgba(148,163,184,0.08)")
-        return fig
-
-
-# ==============================================================================
-# DATABASE BOOTSTRAP
-# ==============================================================================
-@st.cache_resource(show_spinner=False)
-def boot_database(n_components, covariance_type, sr, n_mfcc, max_duration, top_db):
-    core = AcousticFeatureCore(sr=sr, n_mfcc=n_mfcc, max_duration=max_duration, top_db=top_db)
-    zip_files = sorted(list(Path(".").glob("*.zip")))
-
-    frame_bank = defaultdict(list)
-    wave_bank = defaultdict(list)
-    file_count_bank = defaultdict(int)
-
-    for z in zip_files:
-        label = z.stem.replace("Logat_", "").replace("logat_", "").upper()
-        with tempfile.TemporaryDirectory() as td:
-            try:
-                with zipfile.ZipFile(z, "r") as zf:
-                    zf.extractall(td)
-            except Exception:
-                continue
-
-            for f in Path(td).rglob("*"):
-                if f.suffix.lower() in [".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"]:
-                    try:
-                        y = core.load_audio(str(f))
-                        frames, mfcc, yt = core.extract_frame_features(y)
-                        if frames is not None and len(frames) > 5:
-                            frame_bank[label].append(frames)
-                            wave_bank[label].append(yt)
-                            file_count_bank[label] += 1
-                    except Exception:
-                        continue
-
-    if not frame_bank:
-        return None, None, None, [], {}
-
-    clf = GMMDialectClassifier(n_components=n_components, covariance_type=covariance_type)
-    clf.fit(frame_bank, file_count_bank)
-    return clf, core, wave_bank, zip_files, dict(file_count_bank)
-
-
-# ==============================================================================
-# SMALL UI HELPERS
-# ==============================================================================
-def section(num, title):
-    st.markdown(
-        f"""
-        <div class="section-title">
-            <span class="num">{num}</span>
-            <span class="txt">{title}</span>
-            <span class="line"></span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_rank(ranked):
-    for i, (label, prob, ll) in enumerate(ranked, start=1):
-        pct = prob * 100
-        top_class = " top" if i == 1 else ""
-        st.markdown(
-            f"""
-            <div class="rank-item{top_class}">
-                <div class="rank-num">#{i}</div>
-                <div class="rank-name">{label}</div>
-                <div class="bar-bg"><div class="bar-fill" style="width:{pct:.2f}%"></div></div>
-                <div class="rank-pct">{pct:.1f}%</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
+    except Exception:
+        return None
 
 # ==============================================================================
 # MAIN APP
 # ==============================================================================
-def start_gmm_dialect_app():
-    with st.sidebar:
-        st.markdown(
-            """
-            <div class="sidebar-logo">
-                <div class="brand"><span class="gradient-text">DialectAI</span></div>
-                <div class="subbrand">MFCC · GMM Classifier</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        zip_count = len(list(Path(".").glob("*.zip")))
-        st.markdown(
-            f"""
-            <div class="sidebar-stat">
-                <div class="label">Database Terdeteksi</div>
-                <div class="value">{zip_count}</div>
-                <div style="color:#94a3b8;font-size:0.78rem;margin-top:0.35rem;">arsip logat .zip</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown("**Parameter Model**")
-        n_components = st.slider("Jumlah komponen GMM", 1, 24, 8, help="Komponen Gaussian. Naikkan jika data per dialek banyak.")
-        covariance_type = st.selectbox("Tipe kovarians", ["diag", "full", "tied", "spherical"], index=0)
-        temperature = st.slider("Kalibrasi confidence", 0.3, 3.0, 1.0, 0.1, help="Lebih kecil = confidence lebih tajam; lebih besar = lebih halus.")
-
-        st.markdown("**Parameter Audio**")
-        sr = st.selectbox("Sampling rate", [16000, 22050], index=0)
-        n_mfcc = st.slider("Jumlah MFCC", 13, 40, 20)
-        max_duration = st.slider("Durasi maksimum audio", 3.0, 12.0, 6.0, 0.5)
-        top_db = st.slider("Trim silence top_db", 15, 45, 25)
-
-        if st.button("Muat Ulang Model", use_container_width=True):
-            st.cache_resource.clear()
-            st.rerun()
-
-        st.markdown(
-            """
-            <div class="note-box" style="font-size:0.78rem;">
-            Model ini melatih satu GMM untuk setiap dialek. Audio uji dipilih berdasarkan average log-likelihood tertinggi.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
+def main():
     st.markdown(
         """
         <div class="hero">
-            <div class="hero-content">
-                <div class="eyebrow">🎙️ Probabilistic Acoustic Intelligence</div>
-                <h1 class="hero-title">Dialect Recognition<br><span class="gradient-text">MFCC + GMM</span></h1>
-                <div class="hero-subtitle">
-                    Sistem klasifikasi dialek berbasis fitur MFCC, Delta, dan Delta-Delta. Setiap dialek dimodelkan sebagai distribusi campuran Gaussian sehingga kemiripan dihitung berdasarkan likelihood statistik, bukan penyelarasan temporal DTW.
+            <div>
+                <div class="eyebrow">MFCC · GMM · Dialect Recognition</div>
+                <h1 class="title">Dialect<span>Lab</span> GMM</h1>
+                <div class="subtitle">
+                    Sistem klasifikasi logat berbasis distribusi akustik. Audio diekstraksi menjadi MFCC, Delta, dan Delta-Delta, lalu setiap logat dimodelkan menggunakan Gaussian Mixture Model.
                 </div>
-                <div class="chip-row">
-                    <span class="chip">MFCC Frame-Level</span>
-                    <span class="chip">Gaussian Mixture Model</span>
-                    <span class="chip">Log-Likelihood Scoring</span>
-                    <span class="chip">Softmax Confidence</span>
-                    <span class="chip">Modern Visual Analytics</span>
+                <div class="badge-row">
+                    <span class="badge">MFCC</span>
+                    <span class="badge">Delta</span>
+                    <span class="badge">Delta-Delta</span>
+                    <span class="badge">StandardScaler</span>
+                    <span class="badge">Gaussian Mixture Model</span>
+                    <span class="badge">Kaggle Dataset</span>
                 </div>
             </div>
         </div>
@@ -965,180 +828,208 @@ def start_gmm_dialect_app():
         unsafe_allow_html=True,
     )
 
-    clf, core, wave_bank, zip_files, file_counts = boot_database(
-        n_components=n_components,
-        covariance_type=covariance_type,
-        sr=sr,
-        n_mfcc=n_mfcc,
-        max_duration=max_duration,
-        top_db=top_db,
-    )
+    with st.sidebar:
+        st.markdown("### 🎙️ DialectLab GMM")
+        st.caption("Konfigurasi dataset dan model")
 
-    if clf is None:
-        st.error("Database akustik tidak ditemukan. Letakkan file .zip logat di direktori yang sama dengan script ini, misalnya Logat_BUGIS.zip, Logat_JAWA.zip, dan seterusnya.")
-        return
+        use_kaggle = st.toggle("Ambil dataset dari Kaggle", value=True)
+        dataset_slug = st.text_input(
+            "Kaggle dataset slug",
+            value="username/nama-dataset",
+            help="Contoh: fatahillahrws/dialect-audio-training",
+        )
+        local_dataset_path = st.text_input(
+            "Path dataset lokal / ZIP lokal",
+            value="Data_training.zip",
+            help="Dipakai kalau toggle Kaggle dimatikan. Bisa folder atau file ZIP.",
+        )
 
-    total_files = sum(file_counts.values())
-    total_frames = sum(clf.label_frame_counts.values())
-    st.markdown(
-        f"""
-        <div class="metric-grid">
-            <div class="metric"><div class="metric-label">Kelas Dialek</div><div class="metric-value gradient-text">{len(clf.models)}</div><div class="metric-sub">model GMM aktif</div></div>
-            <div class="metric"><div class="metric-label">Sampel Audio</div><div class="metric-value">{total_files}</div><div class="metric-sub">file referensi</div></div>
-            <div class="metric"><div class="metric-label">Frame Fitur</div><div class="metric-value">{total_frames:,}</div><div class="metric-sub">MFCC + Δ + ΔΔ</div></div>
-            <div class="metric"><div class="metric-label">Dimensi Fitur</div><div class="metric-value">{n_mfcc*3}</div><div class="metric-sub">per frame audio</div></div>
-        </div>
-        """.replace(",", "."),
-        unsafe_allow_html=True,
-    )
+        st.divider()
+        st.markdown("#### Parameter Audio")
+        sr = st.select_slider("Sampling rate", options=[8000, 16000, 22050, 44100], value=16000)
+        n_mfcc = st.slider("Jumlah MFCC", 12, 40, 20)
+        max_seconds = st.slider("Durasi maksimum audio", 3, 15, 6)
 
-    section("INPUT", "Pilih atau Rekam Audio Uji")
+        st.divider()
+        st.markdown("#### Parameter GMM")
+        n_components = st.slider("Komponen GMM", 1, 16, 6)
+        covariance_type = st.selectbox("Covariance type", ["diag", "full", "tied", "spherical"], index=0)
+        temperature = st.slider("Kalibrasi confidence", 0.05, 5.0, 0.7, step=0.05)
+        random_state = st.number_input("Random state", value=42, step=1)
+
+        st.divider()
+        if st.button("Reset cache dan latih ulang", use_container_width=True):
+            st.cache_resource.clear()
+            st.rerun()
+
+        st.caption("Struktur dataset: Data_training/Logat Batak, Logat Jawa, Logat Melayu, dst.")
+
+    with st.spinner("Menyiapkan database dan melatih model GMM..."):
+        database = train_gmm_database(
+            dataset_slug=dataset_slug,
+            use_kaggle=use_kaggle,
+            local_dataset_path=local_dataset_path,
+            sr=sr,
+            n_mfcc=n_mfcc,
+            max_seconds=max_seconds,
+            n_components=n_components,
+            covariance_type=covariance_type,
+            random_state=int(random_state),
+        )
+
+    if not database["ok"]:
+        st.error(database["message"])
+        st.info(
+            "Pastikan dataset berbentuk folder seperti: Data_training/Logat Batak/audio.wav, "
+            "Data_training/Logat Jawa/audio.wav, dan seterusnya. Jika memakai Kaggle, pastikan slug dan Secrets benar."
+        )
+        st.stop()
+
+    labels = list(database["models"].keys())
+    file_counts = database["file_counts"]
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f'<div class="glass-card"><div class="mini-label">Jumlah Logat</div><div class="metric-big metric-accent">{len(labels)}</div></div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'<div class="glass-card"><div class="mini-label">Total Audio</div><div class="metric-big">{sum(file_counts.values())}</div></div>', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'<div class="glass-card"><div class="mini-label">Frame Training</div><div class="metric-big">{database["total_frames"]:,}</div></div>', unsafe_allow_html=True)
+    with c4:
+        st.markdown(f'<div class="glass-card"><div class="mini-label">Dimensi Fitur</div><div class="metric-big">{database["feature_dim"]}</div></div>', unsafe_allow_html=True)
+
+    with st.expander("Lihat ringkasan database training"):
+        st.write(f"**Dataset root terbaca:** `{database['dataset_root']}`")
+        st.write("**Jumlah audio per logat:**")
+        st.json(file_counts)
+
+    st.markdown('<div class="section-title"><span class="section-no">INPUT</span><span class="section-text">Audio Uji</span></div>', unsafe_allow_html=True)
     tab_upload, tab_record = st.tabs(["Unggah Audio", "Rekam Langsung"])
-    audio_stream, source_id = None, ""
+
+    audio_bytes = None
+    source_name = ""
 
     with tab_upload:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
         uploaded = st.file_uploader(
-            "Unggah file audio",
-            type=["wav", "mp3", "m4a", "aac", "flac", "ogg"],
-            help="Format yang didukung: WAV, MP3, M4A, AAC, FLAC, OGG.",
+            "Unggah file audio uji",
+            type=[ext.replace(".", "") for ext in sorted(SUPPORTED_AUDIO)],
+            label_visibility="collapsed",
         )
-        if uploaded:
-            audio_stream = uploaded.read()
-            source_id = uploaded.name
-        st.markdown('</div>', unsafe_allow_html=True)
+        if uploaded is not None:
+            audio_bytes = uploaded.read()
+            source_name = uploaded.name
 
     with tab_record:
-        st.markdown('<div class="panel">', unsafe_allow_html=True)
-        recorded = st.audio_input("Rekam suara untuk diuji")
-        if recorded:
-            audio_stream = recorded.read()
-            source_id = "rekaman_langsung.wav"
-        st.markdown('</div>', unsafe_allow_html=True)
+        recorded = st.audio_input("Rekam audio uji", label_visibility="collapsed")
+        if recorded is not None:
+            audio_bytes = recorded.read()
+            source_name = "rekaman_langsung.wav"
 
-    viz = VizEngine()
+    if audio_bytes is None:
+        st.info("Unggah atau rekam audio untuk memulai klasifikasi logat.")
+        st.stop()
 
-    if audio_stream:
-        with st.spinner("Mengekstraksi MFCC dan menghitung likelihood GMM..."):
-            suffix = Path(source_id).suffix if Path(source_id).suffix else ".wav"
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-                tmp.write(audio_stream)
-                tmp_path = tmp.name
+    core = AcousticGMMCore(sr=sr, n_mfcc=n_mfcc, max_seconds=max_seconds)
 
-            try:
-                y_raw = core.load_audio(tmp_path)
-                frames, mfcc_norm, y_trim = core.extract_frame_features(y_raw)
-            finally:
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
+    suffix = Path(source_name).suffix if Path(source_name).suffix else ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
 
-            if frames is None or len(frames) < 5:
-                st.error("Fitur audio gagal diekstraksi. Coba gunakan rekaman yang lebih jelas dan berdurasi minimal 1 detik.")
-                return
+    y_raw = core.load_audio(tmp_path)
+    try:
+        os.remove(tmp_path)
+    except Exception:
+        pass
 
-            ranked = clf.predict(frames, temperature=temperature)
-            winner, confidence, winner_ll = ranked[0]
+    test_features, y_trimmed, mfcc = core.extract_frame_features(y_raw)
+    if test_features is None:
+        st.error("Audio uji gagal diproses. Pastikan file tidak rusak dan durasinya cukup.")
+        st.stop()
 
-        section("HASIL", "Prediksi Dialek Berbasis Likelihood")
-        st.markdown(
-            f"""
-            <div class="winner-card">
-                <div class="winner-label">Prediksi Dialek Terkuat</div>
-                <div class="winner-name"><span class="gradient-text">{winner}</span></div>
-                <div class="winner-desc">
-                    Audio uji paling sesuai dengan model distribusi dialek <b>{winner}</b>. Confidence relatif dihitung dari softmax average log-likelihood seluruh model GMM.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        duration = len(y_trim) / core.SR
-        st.markdown(
-            f"""
-            <div class="metric-grid">
-                <div class="metric"><div class="metric-label">Confidence</div><div class="metric-value gradient-text">{confidence*100:.1f}%</div><div class="metric-sub">softmax likelihood</div></div>
-                <div class="metric"><div class="metric-label">Log-Likelihood</div><div class="metric-value">{winner_ll:.2f}</div><div class="metric-sub">average per frame</div></div>
-                <div class="metric"><div class="metric-label">Durasi Bersih</div><div class="metric-value">{duration:.2f}s</div><div class="metric-sub">setelah trim silence</div></div>
-                <div class="metric"><div class="metric-label">Frame Uji</div><div class="metric-value">{len(frames)}</div><div class="metric-sub">fitur dianalisis</div></div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        section("01", "Peringkat Similarity Antar Dialek")
-        col1, col2 = st.columns([1.25, 0.9])
-        with col1:
-            st.markdown('<div class="panel">', unsafe_allow_html=True)
-            st.plotly_chart(viz.likelihood_bars(ranked), use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-        with col2:
-            st.markdown('<div class="panel">', unsafe_allow_html=True)
-            render_rank(ranked)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        st.markdown(
-            f"""
-            <div class="note-box">
-            Pada pendekatan GMM, similarity tidak dihitung dari jarak lintasan seperti DTW. Similarity dihitung dari seberapa besar peluang fitur frame-level audio uji muncul pada distribusi Gaussian dialek tertentu. Dialek <b>{winner}</b> memperoleh likelihood tertinggi sehingga menjadi kelas prediksi utama.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        section("02", "Visualisasi Sinyal dan MFCC")
-        col3, col4 = st.columns(2)
-        with col3:
-            st.markdown('<div class="panel">', unsafe_allow_html=True)
-            st.plotly_chart(viz.waveform(y_trim), use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-        with col4:
-            st.markdown('<div class="panel">', unsafe_allow_html=True)
-            st.plotly_chart(viz.mfcc_heatmap(mfcc_norm), use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        section("03", "Radar Confidence dan Kecerahan Akustik")
-        col5, col6 = st.columns(2)
-        with col5:
-            st.markdown('<div class="panel">', unsafe_allow_html=True)
-            st.plotly_chart(viz.radar(ranked), use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-        with col6:
-            st.markdown('<div class="panel">', unsafe_allow_html=True)
-            st.plotly_chart(viz.spectral_centroid(y_trim, core.SR), use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        section("04", "Peta Fitur Audio Uji")
-        pca_fig = viz.pca_projection(clf, frames, winner)
-        if pca_fig is not None:
-            st.markdown('<div class="panel">', unsafe_allow_html=True)
-            st.plotly_chart(pca_fig, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info("PCA tidak tersedia karena jumlah fitur database belum cukup.")
-
-    else:
-        section("STATUS", "Model Siap Digunakan")
-        st.markdown(
-            """
-            <div class="note-box">
-            Unggah atau rekam audio untuk memulai klasifikasi. Pastikan rekaman cukup jelas, tidak terlalu banyak noise, dan berdurasi minimal sekitar satu detik agar fitur MFCC dapat terbaca stabil.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown(
-        """
-        <div class="footer">
-            DialectAI · MFCC + Gaussian Mixture Model · Probabilistic Acoustic Classification
-        </div>
-        """,
-        unsafe_allow_html=True,
+    ranking = classify_with_gmm(
+        test_features=test_features,
+        models=database["models"],
+        scaler=database["scaler"],
+        temperature=temperature,
     )
 
+    winner, winner_ll, winner_prob = ranking[0]
+    second_prob = ranking[1][2] if len(ranking) > 1 else 0
+    margin = max(0.0, winner_prob - second_prob)
+
+    st.markdown('<div class="section-title"><span class="section-no">HASIL</span><span class="section-text">Prediksi GMM</span></div>', unsafe_allow_html=True)
+    r1, r2, r3 = st.columns(3)
+    with r1:
+        st.markdown(f'<div class="glass-card"><div class="mini-label">Prediksi Logat</div><div class="metric-big metric-accent">{winner}</div></div>', unsafe_allow_html=True)
+    with r2:
+        st.markdown(f'<div class="glass-card"><div class="mini-label">Confidence</div><div class="metric-big">{winner_prob*100:.1f}%</div></div>', unsafe_allow_html=True)
+    with r3:
+        st.markdown(f'<div class="glass-card"><div class="mini-label">Margin vs Rank 2</div><div class="metric-big">{margin*100:.1f}%</div></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-title"><span class="section-no">01</span><span class="section-text">Peringkat Similarity</span></div>', unsafe_allow_html=True)
+    for i, (label, ll, prob) in enumerate(ranking, start=1):
+        top_cls = " top" if i == 1 else ""
+        st.markdown(
+            f"""
+            <div class="rank-line{top_cls}">
+                <div class="rank-num">#{i}</div>
+                <div class="rank-name">{label}</div>
+                <div class="bar-bg"><div class="bar-fill" style="width:{prob*100:.2f}%"></div></div>
+                <div class="rank-score">{prob*100:.1f}%</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown('<div class="section-title"><span class="section-no">02</span><span class="section-text">Visualisasi Audio</span></div>', unsafe_allow_html=True)
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.plotly_chart(plot_waveform(y_trimmed, "Waveform Audio Uji"), use_container_width=True)
+    with col_b:
+        st.plotly_chart(plot_mfcc_heatmap(mfcc, "MFCC Audio Uji"), use_container_width=True)
+
+    st.markdown('<div class="section-title"><span class="section-no">03</span><span class="section-text">Distribusi Confidence</span></div>', unsafe_allow_html=True)
+    col_c, col_d = st.columns(2)
+    with col_c:
+        st.plotly_chart(plot_radar(ranking), use_container_width=True)
+    with col_d:
+        st.plotly_chart(plot_score_bar(ranking), use_container_width=True)
+
+    st.markdown('<div class="section-title"><span class="section-no">04</span><span class="section-text">Analisis Spektral dan PCA</span></div>', unsafe_allow_html=True)
+    col_e, col_f = st.columns(2)
+    with col_e:
+        sc = core.spectral_centroid(y_trimmed)
+        st.plotly_chart(plot_spectral_centroid(sc), use_container_width=True)
+    with col_f:
+        fig_pca = plot_pca_projection(test_features, database, winner)
+        if fig_pca is not None:
+            st.plotly_chart(fig_pca, use_container_width=True)
+        else:
+            st.info("PCA projection belum dapat dibuat untuk data ini.")
+
+    with st.expander("Penjelasan metode yang digunakan"):
+        st.markdown(
+            f"""
+            **Pipeline analisis:**
+
+            `Audio → Trim silence → Normalisasi amplitudo → MFCC → Delta → Delta-Delta → StandardScaler → GMM per logat → Log-likelihood → Softmax confidence`
+
+            **Interpretasi hasil:**
+            - Setiap logat dilatih sebagai distribusi Gaussian campuran.
+            - Audio uji dihitung nilai **average log-likelihood** terhadap setiap model logat.
+            - Logat dengan likelihood tertinggi dipilih sebagai prediksi.
+            - Confidence adalah hasil kalibrasi softmax dari likelihood antar logat.
+
+            **Model aktif:**
+            - Sampling rate: `{sr}` Hz
+            - MFCC: `{n_mfcc}`
+            - Fitur per frame: `{database['feature_dim']}`
+            - GMM components: `{n_components}`
+            - Covariance type: `{covariance_type}`
+            - Confidence temperature: `{temperature}`
+            """
+        )
 
 if __name__ == "__main__":
-    start_gmm_dialect_app()
+    main()
