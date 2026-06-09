@@ -1,9 +1,9 @@
 streamlit
 numpy
-librosa
 scipy
+librosa
 scikit-learn
 plotly
 pydub
 imageio-ffmpeg
-joblib
+kaggle
