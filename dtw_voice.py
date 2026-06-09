@@ -57,6 +57,13 @@ st.set_page_config(
 
 SUPPORTED_AUDIO = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg", ".wma", ".mp4"}
 LOCAL_DATA_DIR = Path("kaggle_dataset")
+DEFAULT_LOCAL_DATASET_PATHS = [
+    Path("Data_training.zip"),
+    Path("Data_training"),
+    Path("data_training.zip"),
+    Path("data_training"),
+]
+DEFAULT_KAGGLE_DATASET_SLUG = "fatahillahrawosi/data-training"
 
 # ==============================================================================
 # MODERN UI STYLE
@@ -277,18 +284,75 @@ apply_modern_style()
 # ==============================================================================
 # KAGGLE DATA HANDLER
 # ==============================================================================
+def get_secret_value(key, default=None):
+    """Read a Streamlit secret safely."""
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+
 def setup_kaggle_credentials():
     """Use Streamlit secrets first, then environment variables, then local kaggle.json."""
-    try:
-        if "KAGGLE_USERNAME" in st.secrets and "KAGGLE_KEY" in st.secrets:
-            os.environ["KAGGLE_USERNAME"] = st.secrets["KAGGLE_USERNAME"]
-            os.environ["KAGGLE_KEY"] = st.secrets["KAGGLE_KEY"]
-    except Exception:
-        pass
+    username = get_secret_value("KAGGLE_USERNAME") or os.environ.get("KAGGLE_USERNAME")
+    key = get_secret_value("KAGGLE_KEY") or os.environ.get("KAGGLE_KEY")
+
+    if username and key:
+        os.environ["KAGGLE_USERNAME"] = str(username)
+        os.environ["KAGGLE_KEY"] = str(key)
+        return True
+    return False
 
 
-def download_kaggle_dataset(dataset_slug: str, target_dir: str = "kaggle_dataset") -> Path:
-    """Download and unzip a Kaggle dataset if target folder does not already contain audio or zip data."""
+def normalize_kaggle_slug(raw_slug: str):
+    """Create safe Kaggle slug candidates from common user input mistakes."""
+    raw = (raw_slug or "").strip().strip("/")
+    if not raw:
+        return []
+
+    # Kaggle dataset slug is username/dataset-slug, not username/file.zip.
+    if raw.lower().endswith(".zip"):
+        raw = raw[:-4]
+
+    variants = []
+    def add(x):
+        x = x.strip().strip("/")
+        if x and x not in variants and "/" in x:
+            variants.append(x)
+
+    add(raw)
+    add(raw.lower())
+
+    if "/" in raw:
+        user, ds = raw.split("/", 1)
+        ds_clean = ds.replace(" ", "-")
+        add(f"{user}/{ds_clean}")
+        add(f"{user.lower()}/{ds_clean.lower()}")
+        add(f"{user.lower()}/{ds_clean.lower().replace('_', '-')}")
+        add(f"{user.lower()}/{ds_clean.lower().replace('-', '_')}")
+
+    return variants
+
+
+def get_auto_kaggle_slug():
+    """Dataset slug is read automatically from secrets/env, then fallback constant."""
+    return (
+        get_secret_value("KAGGLE_DATASET_SLUG")
+        or os.environ.get("KAGGLE_DATASET_SLUG")
+        or DEFAULT_KAGGLE_DATASET_SLUG
+    )
+
+
+def find_local_dataset_path():
+    """Prefer local dataset if available, so the app works offline and during local testing."""
+    for path in DEFAULT_LOCAL_DATASET_PATHS:
+        if path.exists():
+            return path
+    return None
+
+
+def download_kaggle_dataset(dataset_slug: str = None, target_dir: str = "kaggle_dataset") -> Path:
+    """Download and unzip a Kaggle dataset automatically. Tries several slug variants."""
     target_path = Path(target_dir)
     target_path.mkdir(parents=True, exist_ok=True)
 
@@ -297,27 +361,58 @@ def download_kaggle_dataset(dataset_slug: str, target_dir: str = "kaggle_dataset
     if existing_audio or existing_zip:
         return target_path
 
-    if not dataset_slug or dataset_slug.strip() in {"username/nama-dataset", ""}:
+    raw_slug = dataset_slug or get_auto_kaggle_slug()
+    slug_candidates = normalize_kaggle_slug(raw_slug)
+
+    if not slug_candidates:
+        st.error("Kaggle dataset slug belum tersedia. Tambahkan KAGGLE_DATASET_SLUG di Streamlit Secrets.")
         return target_path
 
-    setup_kaggle_credentials()
+    credentials_ok = setup_kaggle_credentials()
+    if not credentials_ok:
+        st.error("KAGGLE_USERNAME dan KAGGLE_KEY belum terbaca dari Streamlit Secrets atau environment variable.")
+        return target_path
 
-    try:
-        subprocess.check_call([
-            sys.executable, "-m", "kaggle", "datasets", "download",
-            "-d", dataset_slug,
-            "-p", str(target_path),
-            "--unzip",
-        ])
-    except Exception as e:
-        st.error(
-            "Gagal mengunduh dataset dari Kaggle. Pastikan KAGGLE_USERNAME, "
-            "KAGGLE_KEY, dan dataset slug sudah benar.\n\n"
-            f"Detail error: {e}"
-        )
+    last_error = None
+    for slug in slug_candidates:
+        try:
+            subprocess.check_call([
+                sys.executable, "-m", "kaggle", "datasets", "download",
+                "-d", slug,
+                "-p", str(target_path),
+                "--unzip",
+            ])
+            return target_path
+        except Exception as e:
+            last_error = e
 
+    st.error(
+        "Gagal mengunduh dataset dari Kaggle secara otomatis. "
+        "Pastikan dataset slug benar dan API Kaggle aktif.\n\n"
+        f"Slug yang dicoba: {', '.join(slug_candidates)}\n\n"
+        f"Detail error terakhir: {last_error}"
+    )
     return target_path
 
+
+def resolve_dataset_source():
+    """Automatic dataset source: local first, then Kaggle."""
+    local_path = find_local_dataset_path()
+    if local_path is not None:
+        return {
+            "source": "local",
+            "path": local_path,
+            "slug": None,
+            "label": f"Dataset lokal: {local_path}",
+        }
+
+    slug = get_auto_kaggle_slug()
+    return {
+        "source": "kaggle",
+        "path": LOCAL_DATA_DIR,
+        "slug": slug,
+        "label": f"Kaggle: {slug}",
+    }
 
 def extract_all_nested_zips(base_dir: Path) -> Path:
     """Extract ZIP files recursively. Keeps original zip files, extracts to folders with the same stem."""
@@ -496,9 +591,6 @@ def collect_label_audio_files(dataset_root: Path):
 
 @st.cache_resource(show_spinner=False)
 def train_gmm_database(
-    dataset_slug: str,
-    use_kaggle: bool,
-    local_dataset_path: str,
     sr: int,
     n_mfcc: int,
     max_seconds: int,
@@ -508,13 +600,14 @@ def train_gmm_database(
 ):
     core = AcousticGMMCore(sr=sr, n_mfcc=n_mfcc, max_seconds=max_seconds)
 
-    if use_kaggle:
-        base_path = download_kaggle_dataset(dataset_slug, str(LOCAL_DATA_DIR))
+    dataset_source = resolve_dataset_source()
+    if dataset_source["source"] == "kaggle":
+        base_path = download_kaggle_dataset(dataset_source["slug"], str(LOCAL_DATA_DIR))
     else:
-        base_path = Path(local_dataset_path) if local_dataset_path else Path(".")
+        base_path = Path(dataset_source["path"])
 
     # Also support local zip in working directory, e.g. Data_training.zip
-    if not use_kaggle and base_path.is_file() and base_path.suffix.lower() == ".zip":
+    if base_path.is_file() and base_path.suffix.lower() == ".zip":
         tmp_dir = Path("local_dataset_extracted")
         tmp_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(base_path, "r") as zf:
@@ -529,6 +622,7 @@ def train_gmm_database(
         return {
             "ok": False,
             "message": f"Dataset belum terbaca. Root yang dicari: {dataset_root}",
+            "dataset_source": dataset_source["label"],
             "dataset_root": str(dataset_root),
             "models": {},
             "scaler": None,
@@ -565,6 +659,7 @@ def train_gmm_database(
         return {
             "ok": False,
             "message": "Audio berhasil ditemukan, tetapi label valid kurang dari 2.",
+            "dataset_source": dataset_source["label"],
             "dataset_root": str(dataset_root),
             "models": {},
             "scaler": None,
@@ -607,6 +702,7 @@ def train_gmm_database(
     return {
         "ok": True,
         "message": "Model GMM berhasil dilatih.",
+        "dataset_source": dataset_source["label"],
         "dataset_root": str(dataset_root),
         "models": models,
         "scaler": scaler,
@@ -832,17 +928,10 @@ def main():
         st.markdown("### 🎙️ DialectLab GMM")
         st.caption("Konfigurasi dataset dan model")
 
-        use_kaggle = st.toggle("Ambil dataset dari Kaggle", value=True)
-        dataset_slug = st.text_input(
-            "Kaggle dataset slug",
-            value="username/nama-dataset",
-            help="Contoh: fatahillahrws/dialect-audio-training",
-        )
-        local_dataset_path = st.text_input(
-            "Path dataset lokal / ZIP lokal",
-            value="Data_training.zip",
-            help="Dipakai kalau toggle Kaggle dimatikan. Bisa folder atau file ZIP.",
-        )
+        dataset_source_preview = resolve_dataset_source()
+        st.success("Dataset dibaca otomatis")
+        st.caption(dataset_source_preview["label"])
+        st.caption("Local otomatis: Data_training.zip / Data_training. Jika tidak ada, aplikasi mengambil dari Kaggle Secrets.")
 
         st.divider()
         st.markdown("#### Parameter Audio")
@@ -866,9 +955,6 @@ def main():
 
     with st.spinner("Menyiapkan database dan melatih model GMM..."):
         database = train_gmm_database(
-            dataset_slug=dataset_slug,
-            use_kaggle=use_kaggle,
-            local_dataset_path=local_dataset_path,
             sr=sr,
             n_mfcc=n_mfcc,
             max_seconds=max_seconds,
@@ -881,7 +967,7 @@ def main():
         st.error(database["message"])
         st.info(
             "Pastikan dataset berbentuk folder seperti: Data_training/Logat Batak/audio.wav, "
-            "Data_training/Logat Jawa/audio.wav, dan seterusnya. Jika memakai Kaggle, pastikan slug dan Secrets benar."
+            "Data_training/Logat Jawa/audio.wav, dan seterusnya. Untuk Kaggle, isi Secrets: KAGGLE_USERNAME, KAGGLE_KEY, dan KAGGLE_DATASET_SLUG."
         )
         st.stop()
 
@@ -899,6 +985,7 @@ def main():
         st.markdown(f'<div class="glass-card"><div class="mini-label">Dimensi Fitur</div><div class="metric-big">{database["feature_dim"]}</div></div>', unsafe_allow_html=True)
 
     with st.expander("Lihat ringkasan database training"):
+        st.write(f"**Sumber dataset:** `{database.get('dataset_source', '-')}`")
         st.write(f"**Dataset root terbaca:** `{database['dataset_root']}`")
         st.write("**Jumlah audio per logat:**")
         st.json(file_counts)
